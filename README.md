@@ -73,7 +73,21 @@ Set `PI_VOICE_PROVIDER`, or let it be inferred from whichever credentials exist.
 
 Runs MAI-Transcribe-2, which does automatic language identification, code switching,
 and **keyword biasing** — the combination that matters when you mix Chinese and English
-and say project names out loud.
+and say project names out loud. The mined vocabulary is sent as `phraseList.phrases`,
+which takes up to 500 entries, so the whole list fits.
+
+> **Region matters.** MAI-Transcribe is only served from `eastus`, `northeurope`,
+> `southeastasia`, `westus`, and `westus2`. A resource elsewhere is rejected. Create one
+> in a supported region:
+>
+> ```bash
+> az cognitiveservices account create --name my-speech --resource-group my-rg \
+>   --kind AIServices --sku S0 --location westus2 --yes
+> az cognitiveservices account show --name my-speech --resource-group my-rg \
+>   --query properties.endpoint -o tsv
+> az cognitiveservices account keys list --name my-speech --resource-group my-rg \
+>   --query key1 -o tsv
+> ```
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -82,8 +96,6 @@ and say project names out loud.
 | `PI_VOICE_SPEECH_MODEL` | `MAI-Transcribe-2` | Also accepts `MAI-Transcribe-1.5` |
 | `PI_VOICE_SPEECH_STYLE` | `clean` | `clean` drops fillers, `verbatim` keeps them |
 | `PI_VOICE_SPEECH_API_VERSION` | `2025-10-15` | |
-
-`PI_VOICE_TERMS` becomes the phrase list (up to 500 entries).
 
 ### `azure-openai` — gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper
 
@@ -94,7 +106,8 @@ and say project names out loud.
 | `PI_VOICE_DEPLOYMENT` | `gpt-4o-transcribe` |
 | `PI_VOICE_OPENAI_API_VERSION` | `2024-10-21` |
 
-`PI_VOICE_TERMS` becomes the `prompt` field, which biases spelling of names and jargon.
+`PI_VOICE_TERMS` becomes the `prompt` field. Whisper only reads the last 224 tokens of a
+prompt, so the vocabulary is trimmed to fit rather than sent whole.
 
 ### `openai` — OpenAI, Groq, or a local server
 
@@ -112,11 +125,58 @@ Groq: `PI_VOICE_OPENAI_BASE_URL=https://api.groq.com/openai/v1` with
 Returns a fixed string describing the audio it received. Use it to confirm the button,
 the recorder, and the round trip work before adding credentials.
 
+## Check the backend before blaming the microphone
+
+```bash
+pi-web-voice doctor                  # sends a generated tone
+pi-web-voice doctor recording.wav    # or your own audio
+```
+
+It prints the resolved settings with the key masked, the vocabulary it would send, and
+either a transcript or a diagnosis — `401` wrong key, `404` wrong resource or region,
+`400` a model that region does not serve. An empty transcript from the generated tone is
+expected and still proves the credentials work.
+
+## Vocabulary comes from your conversation
+
+A hand-written term list goes stale the moment you start a new project, so the
+vocabulary is mined per request instead:
+
+1. The page reports which session the tab is showing, captured from pi-web's own
+   `EventSource("/api/agent/<id>/events")` call, plus the working directory. No guessing
+   from "most recent session".
+2. The hook reads that session's JSONL — the same files pi-web reads — and scores terms
+   with a distinctive written shape: `camelCase`, `kebab-case`, `file.ext`, `a/b/c`,
+   acronyms, and short backtick spans. Ordinary words are skipped; a speech model gets
+   those right already.
+3. What you typed yourself counts more than what the assistant wrote, and recent text
+   counts more than old text.
+4. With no session yet, the project's recent conversations are used instead. With
+   neither, nothing is sent — no invented vocabulary.
+
+Inspect it any time:
+
+```bash
+curl 'http://127.0.0.1:30141/__voice/terms?session=<id>'
+curl 'http://127.0.0.1:30141/__voice/terms?cwd=/path/to/project'
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PI_VOICE_CONTEXT` | `session` | `session`, `project` (adds recent sessions in the same directory), or `off` |
+| `PI_VOICE_MAX_TERMS` | `400` | Upper bound, further capped by what the provider accepts |
+| `PI_VOICE_CONTEXT_BYTES` | `262144` | How much of each session file to read, from the end |
+| `PI_VOICE_PROJECT_SESSIONS` | `5` | How many past sessions to include under `project` |
+| `PI_VOICE_TERMS` | — | Pinned extras, always sent first |
+
+**Thinking blocks, tool arguments and tool results are never read** — they are noisy and
+they are where secrets live. Anything resembling a credential is dropped as well: known
+key prefixes, hex digests, base64 blobs, and long separator-free mixed strings.
+
 ## Options
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PI_VOICE_TERMS` | — | Comma-separated vocabulary: project names, APIs, libraries |
 | `PI_VOICE_LOCALE` | — | Force a language (`zh`, `en`). **Leave empty for mixed-language speech** |
 | `PI_VOICE_MODE` | `toggle` | `toggle` = click to start and stop, `hold` = press and hold |
 | `PI_VOICE_AUTO_SEND` | `0` | `1` submits immediately instead of waiting for review |

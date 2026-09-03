@@ -13,6 +13,15 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
+const args = process.argv.slice(2);
+
+// `pi-web-voice doctor [file.wav]` checks the speech backend and exits.
+if (args[0] === "doctor") {
+  const { doctor } = require("../lib/doctor.cjs");
+  doctor(args.slice(1)).then((code) => process.exit(code));
+  return;
+}
+
 const hook = path.join(__dirname, "..", "hook.cjs");
 const quoted = hook.includes(" ") ? `"${hook}"` : hook;
 
@@ -22,7 +31,7 @@ const env = {
 };
 
 const command = process.env.PI_VOICE_TARGET || "pi-web";
-const child = spawn(command, process.argv.slice(2), { env, stdio: "inherit", shell: process.platform === "win32" });
+const child = spawn(command, args, { env, stdio: "inherit", shell: process.platform === "win32" });
 
 child.on("error", (error) => {
   if (error.code === "ENOENT") {
