@@ -67,8 +67,8 @@ PI_VOICE_MODE=hold
 ```
 
 Anything already exported wins over the file, so `AZURE_SPEECH_KEY=other pi-web-voice`
-still overrides it for one run. Point `PI_VOICE_ENV` elsewhere to use a different file.
-Keep it `chmod 600`; the hook warns if it is not.
+overrides it for one run without editing anything. Keep it `chmod 600`; the hook warns
+if it is not.
 
 ## ⚠️ The microphone needs HTTPS or localhost
 
@@ -192,10 +192,10 @@ key prefixes, hex digests, base64 blobs, and long separator-free mixed strings.
 
 ## Every setting
 
-Eleven variables, eight of which are credentials for three mutually exclusive backends.
-That leaves three, and two of those you will never touch. Anything with one correct
-answer — route prefix, API versions, model name, transcription style, timeouts, context
-window sizes, keyboard shortcut — is a constant in `lib/config.cjs`, not a knob.
+Nine variables, eight of which are credentials for three mutually exclusive backends.
+That leaves one. Anything with one correct answer — route prefix, API versions, model
+name, transcription style, timeouts, context window sizes, keyboard shortcut, and where
+the key file lives — is a constant in `lib/config.cjs`, not a knob.
 
 **Credentials** — set one group; the backend is chosen from whichever is present.
 
@@ -209,9 +209,7 @@ window sizes, keyboard shortcut — is a constant in `lib/config.cjs`, not a kno
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PI_VOICE_PROVIDER` | inferred | `azure-speech`, `azure-openai`, `openai`, `mock`. Only needed to break a tie or force the mock |
-| `PI_VOICE_CONTEXT` | `on` | `off` stops reading your sessions entirely |
-| `PI_VOICE_ENV` | `~/.pi/agent/voice.env` | Where to read the variables above from |
+| `PI_VOICE_PROVIDER` | inferred | `azure-speech`, `azure-openai`, `openai`, `mock`. Only needed to break a tie, force the mock, or A/B two backends |
 
 The recognition language is never set, on purpose: automatic language identification and
 mid-sentence code switching only work when it is left off.
