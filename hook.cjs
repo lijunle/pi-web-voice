@@ -30,7 +30,7 @@ if (!global.__PI_WEB_VOICE_INSTALLED__) {
   if (config.enabled) {
     install({
       prefix: config.prefix,
-      tag: `<script src="${config.prefix}/inject.js" defer></script>`,
+      tag: `<script src="${config.prefix}/inject.js"></script>`,
       handleRoute: createRouter(config),
       onError: (error) => console.error("[pi-web-voice]", error),
       onListen: () =>

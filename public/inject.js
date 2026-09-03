@@ -26,6 +26,63 @@
   const SAMPLE_RATE = 16000;
   const BUTTON_ID = "pi-web-voice-button";
 
+  // ── which conversation is this tab on ────────────────────────────────────
+  //
+  // pi-web opens `new EventSource("/api/agent/<id>/events")` for the session it
+  // is showing, so watching that call gives the exact session id — no guessing
+  // from "most recent", and it follows every session switch. This runs before
+  // the app's own bundle, which is why the injected tag is not deferred.
+
+  const SESSION_URL = /\/api\/agent\/([^/?#]+)\/events/;
+  let sessionId = "";
+  let cwd = "";
+
+  function noteSession(url) {
+    const match = SESSION_URL.exec(String(url));
+    if (match) sessionId = decodeURIComponent(match[1]);
+  }
+
+  /** The sidebar renders the working directory as a button title. */
+  function currentCwd() {
+    if (cwd) return cwd;
+    for (const button of document.querySelectorAll("button[title]")) {
+      const title = button.getAttribute("title") ?? "";
+      if (/^(\/[^\s]+|[A-Za-z]:\\[^\s]+)$/.test(title)) return title;
+    }
+    return "";
+  }
+
+  if (window.EventSource) {
+    const NativeEventSource = window.EventSource;
+    const Patched = function EventSource(url, ...rest) {
+      noteSession(url);
+      return new NativeEventSource(url, ...rest);
+    };
+    Patched.prototype = NativeEventSource.prototype;
+    for (const key of ["CONNECTING", "OPEN", "CLOSED"]) Patched[key] = NativeEventSource[key];
+    window.EventSource = Patched;
+  }
+
+  // Backup: the app also POSTs to /api/agent/<id> when sending a prompt, and
+  // /api/agent/new carries the working directory of a session about to exist.
+  const nativeFetch = window.fetch;
+  window.fetch = function fetch(input, init) {
+    try {
+      const url = typeof input === "string" ? input : input?.url;
+      const match = /\/api\/agent\/([^/?#]+)(?:$|\?)/.exec(String(url ?? ""));
+      if (match && match[1] !== "new" && match[1] !== "running") {
+        sessionId = decodeURIComponent(match[1]);
+      }
+      if (match && match[1] === "new" && typeof init?.body === "string") {
+        const parsed = JSON.parse(init.body);
+        if (typeof parsed.cwd === "string") cwd = parsed.cwd;
+      }
+    } catch {
+      /* never let bookkeeping break a request */
+    }
+    return nativeFetch.call(this, input, init);
+  };
+
   // pi-web ships English, Simplified Chinese and Traditional Chinese.
   const ATTACH_TITLES = ["Attach image", "附加图片", "附加圖片"];
   const SEND_LABELS = ["Send", "发送", "發送"];
@@ -353,7 +410,13 @@
       }
 
       try {
-        const response = await fetch(`${CONFIG.prefix}/transcribe`, {
+        const query = new URLSearchParams();
+        if (sessionId) query.set("session", sessionId);
+        const where = currentCwd();
+        if (where) query.set("cwd", where);
+        const suffix = query.toString() ? `?${query}` : "";
+
+        const response = await nativeFetch(`${CONFIG.prefix}/transcribe${suffix}`, {
           method: "POST",
           headers: { "content-type": "audio/wav" },
           body: wav,
@@ -429,5 +492,15 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 
-  window.__piWebVoice = { ui, recorder, config: CONFIG };
+  window.__piWebVoice = {
+    ui,
+    recorder,
+    config: CONFIG,
+    get sessionId() {
+      return sessionId;
+    },
+    get cwd() {
+      return currentCwd();
+    },
+  };
 })();
