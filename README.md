@@ -25,7 +25,7 @@ layer instead, which means `npm update -g @agegr/pi-web` needs no re-apply.
 ## Quick start
 
 ```bash
-git clone https://github.com/YOU/pi-web-voice.git ~/pi-web-voice
+git clone https://github.com/lijunle/pi-web-voice.git ~/pi-web-voice
 npm install -g ~/pi-web-voice
 
 # 1. no credentials needed — proves the button and the round trip work

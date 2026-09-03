@@ -12,6 +12,15 @@
     "azure",
     "whisper"
   ],
+  "homepage": "https://github.com/lijunle/pi-web-voice#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lijunle/pi-web-voice.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lijunle/pi-web-voice/issues"
+  },
+  "author": "Junle Li",
   "license": "MIT",
   "main": "hook.cjs",
   "bin": {
