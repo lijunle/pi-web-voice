@@ -297,9 +297,14 @@ no restart, and any agent session you have running stays alive.
 
 ## Privacy
 
-Audio goes from your browser to your own pi-web origin, and from there to the
-speech backend you configured. Credentials stay on the server; the page is only told
-which provider is active. Nothing is written to disk and nothing else is contacted.
+Audio goes from your browser to your own pi-web origin, and from there to the speech
+backend you configured. The page is only told which provider is active, never the key.
+Nothing is written to disk and nothing else is contacted.
+
+`~/.pi/agent/voice.env` is parsed into a private object rather than merged into
+`process.env`. pi-web runs the agent's shell commands as children of its own process, so
+anything placed in that environment would be handed to every command the agent ever runs.
+Keeping the credentials out of it means only the transcription request sees them.
 
 ## Compatibility
 
