@@ -30,14 +30,11 @@ const env = {
   NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require ${quoted}`,
 };
 
-const command = process.env.PI_VOICE_TARGET || "pi-web";
-const child = spawn(command, args, { env, stdio: "inherit", shell: process.platform === "win32" });
+const child = spawn("pi-web", args, { env, stdio: "inherit", shell: process.platform === "win32" });
 
 child.on("error", (error) => {
   if (error.code === "ENOENT") {
-    console.error(
-      `[pi-web-voice] cannot find "${command}". Install it with: npm i -g @agegr/pi-web`,
-    );
+    console.error("[pi-web-voice] cannot find \"pi-web\". Install it with: npm i -g @agegr/pi-web");
     process.exit(127);
   }
   console.error(`[pi-web-voice] ${error.message}`);

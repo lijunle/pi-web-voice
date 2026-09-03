@@ -27,16 +27,14 @@ if (!global.__PI_WEB_VOICE_INSTALLED__) {
 
   const config = loadConfig();
 
-  if (config.enabled) {
-    install({
-      prefix: config.prefix,
-      tag: `<script src="${config.prefix}/inject.js"></script>`,
-      handleRoute: createRouter(config),
-      onError: (error) => console.error("[pi-web-voice]", error),
-      onListen: () =>
-        console.log(
-          `[pi-web-voice] active · provider=${config.provider} · prefix=${config.prefix}`,
-        ),
-    });
-  }
+  install({
+    prefix: config.prefix,
+    tag: `<script src="${config.prefix}/inject.js"></script>`,
+    handleRoute: createRouter(config),
+    onError: (error) => console.error("[pi-web-voice]", error),
+    onListen: () =>
+      console.log(
+        `[pi-web-voice] active · provider=${config.provider} · context=${config.context.scope}`,
+      ),
+  });
 }

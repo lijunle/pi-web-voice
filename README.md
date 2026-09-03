@@ -25,30 +25,49 @@ layer instead, which means `npm update -g @agegr/pi-web` needs no re-apply.
 
 ```bash
 git clone https://github.com/YOU/pi-web-voice.git ~/pi-web-voice
+npm install -g ~/pi-web-voice
 
-# 1. try it with the built-in mock backend — no credentials needed
-NODE_OPTIONS="--require ~/pi-web-voice/hook.cjs" pi-web
+# 1. no credentials needed — proves the button and the round trip work
+pi-web-voice
 
-# 2. once it works, point it at a real backend
-export AZURE_SPEECH_ENDPOINT=my-speech-resource   # or a full https URL
-export AZURE_SPEECH_KEY=...
-export PI_VOICE_TERMS="MCP Probe, USWDS, repin, stateless"
-NODE_OPTIONS="--require ~/pi-web-voice/hook.cjs" pi-web
+# 2. put your key in a file, then check it
+install -m 600 /dev/null ~/.pi/agent/voice.env
+cat >> ~/.pi/agent/voice.env <<'EOF'
+AZURE_SPEECH_ENDPOINT=https://my-resource.cognitiveservices.azure.com
+AZURE_SPEECH_KEY=...
+EOF
+
+pi-web-voice doctor
+pi-web-voice
 ```
 
-Or install it and skip the environment variable:
+`pi-web-voice` starts pi-web with the hook and passes every argument through, so
+`pi-web-voice -p 8080` works. If you would rather not install anything:
 
 ```bash
-npm install -g ./pi-web-voice
-pi-web-voice          # starts pi-web with the hook, passes every argument through
-pi-web-voice -p 8080
+NODE_OPTIONS="--require ~/pi-web-voice/hook.cjs" pi-web
 ```
 
 You should see this on startup, and a microphone next to the image-attach button:
 
 ```
-[pi-web-voice] active · provider=azure-speech · prefix=/__voice
+[pi-web-voice] active · provider=azure-speech · context=project
 ```
+
+## Where the key goes
+
+`~/.pi/agent/voice.env`, next to pi's own configuration. It is a plain `KEY=value`
+file, loaded by Node itself — no dependency, no parser of ours:
+
+```sh
+AZURE_SPEECH_ENDPOINT=https://my-resource.cognitiveservices.azure.com
+AZURE_SPEECH_KEY=abc123...
+PI_VOICE_MODE=hold
+```
+
+Anything already exported wins over the file, so `AZURE_SPEECH_KEY=other pi-web-voice`
+still overrides it for one run. Point `PI_VOICE_ENV` elsewhere to use a different file.
+Keep it `chmod 600`; the hook warns if it is not.
 
 ## ⚠️ The microphone needs HTTPS or localhost
 
@@ -93,9 +112,7 @@ which takes up to 500 entries, so the whole list fits.
 | --- | --- | --- |
 | `AZURE_SPEECH_ENDPOINT` | — | Resource name or full `https://…cognitiveservices.azure.com` |
 | `AZURE_SPEECH_KEY` | — | Resource key |
-| `PI_VOICE_SPEECH_MODEL` | `MAI-Transcribe-2` | Also accepts `MAI-Transcribe-1.5` |
-| `PI_VOICE_SPEECH_STYLE` | `clean` | `clean` drops fillers, `verbatim` keeps them |
-| `PI_VOICE_SPEECH_API_VERSION` | `2025-10-15` | |
+| `PI_VOICE_STYLE` | `clean` | `clean` drops fillers, `verbatim` keeps them |
 
 ### `azure-openai` — gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper
 
@@ -104,17 +121,16 @@ which takes up to 500 entries, so the whole list fits.
 | `AZURE_OPENAI_ENDPOINT` | — |
 | `AZURE_OPENAI_API_KEY` | — |
 | `PI_VOICE_DEPLOYMENT` | `gpt-4o-transcribe` |
-| `PI_VOICE_OPENAI_API_VERSION` | `2024-10-21` |
 
-`PI_VOICE_TERMS` becomes the `prompt` field. Whisper only reads the last 224 tokens of a
-prompt, so the vocabulary is trimmed to fit rather than sent whole.
+The mined vocabulary becomes the `prompt` field. Whisper only reads the last 224 tokens
+of a prompt, so the list is trimmed to fit rather than sent whole.
 
 ### `openai` — OpenAI, Groq, or a local server
 
 | Variable | Default |
 | --- | --- |
 | `PI_VOICE_OPENAI_BASE_URL` | `https://api.openai.com/v1` |
-| `PI_VOICE_OPENAI_API_KEY` | falls back to `OPENAI_API_KEY` |
+| `OPENAI_API_KEY` | — |
 | `PI_VOICE_OPENAI_MODEL` | `whisper-1` |
 
 Groq: `PI_VOICE_OPENAI_BASE_URL=https://api.groq.com/openai/v1` with
@@ -163,39 +179,40 @@ curl 'http://127.0.0.1:30141/__voice/terms?cwd=/path/to/project'
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PI_VOICE_CONTEXT` | `session` | `session`, `project` (adds recent sessions in the same directory), or `off` |
-| `PI_VOICE_MAX_TERMS` | `400` | Upper bound, further capped by what the provider accepts |
-| `PI_VOICE_CONTEXT_BYTES` | `262144` | How much of each session file to read, from the end |
-| `PI_VOICE_PROJECT_SESSIONS` | `5` | How many past sessions to include under `project` |
-| `PI_VOICE_TERMS` | — | Pinned extras, always sent first |
+| `PI_VOICE_CONTEXT` | `project` | `project` adds the directory's recent sessions, `session` is the current one only, `off` sends nothing |
 
 **Thinking blocks, tool arguments and tool results are never read** — they are noisy and
 they are where secrets live. Anything resembling a credential is dropped as well: known
 key prefixes, hex digests, base64 blobs, and long separator-free mixed strings.
 
-## Options
+## Every setting
+
+Fourteen variables, and you only ever touch a handful: eight are credentials for three
+mutually exclusive backends, and the rest have defaults worth keeping. Anything with one
+correct answer — route prefix, API versions, model name, timeouts, context window sizes,
+keyboard shortcut — is a constant in `lib/config.cjs`, not a knob.
+
+**Credentials** — set one group; the backend is chosen from whichever is present.
+
+| Variable | For |
+| --- | --- |
+| `AZURE_SPEECH_ENDPOINT`, `AZURE_SPEECH_KEY` | Azure AI Speech (MAI-Transcribe-2) |
+| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `PI_VOICE_DEPLOYMENT` | Azure OpenAI |
+| `PI_VOICE_OPENAI_BASE_URL`, `OPENAI_API_KEY`, `PI_VOICE_OPENAI_MODEL` | OpenAI, Groq, local |
+
+**Behaviour**
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PI_VOICE_LOCALE` | — | Force a language (`zh`, `en`). **Leave empty for mixed-language speech** |
+| `PI_VOICE_PROVIDER` | inferred | `azure-speech`, `azure-openai`, `openai`, `mock`. Only needed to break a tie or force the mock |
+| `PI_VOICE_CONTEXT` | `project` | `project`, `session`, or `off` |
 | `PI_VOICE_MODE` | `toggle` | `toggle` = click to start and stop, `hold` = press and hold |
 | `PI_VOICE_AUTO_SEND` | `0` | `1` submits immediately instead of waiting for review |
-| `PI_VOICE_SHORTCUT` | `mod+shift+v` | Keyboard toggle |
-| `PI_VOICE_MEDIA_SESSION` | `1` | Headphone play/pause starts and stops recording |
-| `PI_VOICE_MAX_SECONDS` | `180` | Recording auto-stops here |
-| `PI_VOICE_PREFIX` | `/__voice` | Change if it collides with something |
-| `PI_VOICE_ENABLED` | `1` | `0` disables the hook without unsetting `NODE_OPTIONS` |
+| `PI_VOICE_STYLE` | `clean` | MAI only: `clean` drops fillers, `verbatim` keeps them |
+| `PI_VOICE_ENV` | `~/.pi/agent/voice.env` | Where to read the variables above from |
 
-Everything above can also live in `~/.pi/agent/voice.json` (environment wins):
-
-```json
-{
-  "provider": "azure-speech",
-  "terms": ["MCP Probe", "USWDS", "repin"],
-  "azureSpeech": { "endpoint": "my-resource", "key": "..." },
-  "ui": { "mode": "hold", "autoSend": false }
-}
-```
+The recognition language is never set, on purpose: automatic language identification and
+mid-sentence code switching only work when it is left off.
 
 ## How it works
 
