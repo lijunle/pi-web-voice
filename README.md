@@ -172,9 +172,28 @@ vocabulary is mined per request instead:
    vocabulary.
 
 Ranking is by frequency, not recency. Recency was tried and measured worse: a few turns
-on a side topic would evict the project's durable vocabulary, and the budget is small —
-**MAI-Transcribe accepts at most 50 phrases**, whatever the phrase-list documentation
-suggests.
+on a side topic evicted the project's durable vocabulary, and the budget is small.
+
+### Measured phrase-list limits
+
+The published phrase-list guidance suggests up to 500 entries. Probing the West US
+endpoint says otherwise:
+
+| Model | Phrase list | `transcribeStyle` |
+| --- | --- | --- |
+| `MAI-Transcribe-2` | **50** | supported |
+| `MAI-Transcribe-1.5` | **200** | rejected |
+| `MAI-Transcribe-1` | not supported at all | rejected |
+
+The count is of **words, not entries** — a two-word phrase costs two slots — so only
+single-word terms are mined, and a rejected vocabulary is retried once without the
+phrase list rather than losing the recording.
+
+MAI-Transcribe-2 is used despite the smaller budget, because the larger one does not buy
+anything. On the same recording, `MAI-Transcribe-2` with 50 terms produced
+`hook.cjs` and `phraseList` correctly, while `MAI-Transcribe-1.5` with 200 terms produced
+`hook c js` and `phrase list` — worse than its own no-vocabulary baseline, and twice as
+slow.
 
 Inspect it any time:
 
