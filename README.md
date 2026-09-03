@@ -114,7 +114,7 @@ which takes up to 500 entries, so the whole list fits.
 | `AZURE_SPEECH_ENDPOINT` | — | Resource name or full `https://…cognitiveservices.azure.com` |
 | `AZURE_SPEECH_KEY` | — | Resource key |
 
-### `azure-openai` — gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper
+### `azure-openai` — gpt-transcribe, gpt-4o-transcribe, whisper
 
 | Variable | Default |
 | --- | --- |
@@ -122,8 +122,14 @@ which takes up to 500 entries, so the whole list fits.
 | `AZURE_OPENAI_API_KEY` | — |
 | `PI_VOICE_DEPLOYMENT` | `gpt-4o-transcribe` |
 
-The mined vocabulary becomes the `prompt` field. Whisper only reads the last 224 tokens
-of a prompt, so the list is trimmed to fit rather than sent whole.
+The request shape follows the deployment name:
+
+- **`gpt-transcribe`** uses the v1 surface and gets the vocabulary as structured
+  `keywords[]`, plus `languages[]` derived from the browser's `Accept-Language`. No token
+  budget to fight, and nothing a model could mistake for an instruction.
+- **`gpt-4o-transcribe`** and whisper use the classic deployment path with a `prompt`.
+  Whisper reads only the last 224 tokens of it, so the list is trimmed to fit. Note that
+  `gpt-4o-transcribe` version `2025-03-20` retires on 15 October 2026.
 
 ### `openai` — OpenAI, Groq, or a local server
 
