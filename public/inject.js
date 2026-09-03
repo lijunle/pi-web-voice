@@ -13,15 +13,15 @@
     {
       prefix: "/__voice",
       provider: "mock",
-      mode: "toggle", // "toggle" | "hold"
-      autoSend: false,
-      mediaSession: true,
-      shortcut: "mod+shift+v",
-      maxSeconds: 180,
-      language: "",
     },
     window.__PI_WEB_VOICE__ || {},
   );
+
+  // A press shorter than this latches recording on, so a tap toggles and a
+  // long press is walkie-talkie. No setting needed: the gesture says which.
+  const HOLD_THRESHOLD_MS = 400;
+  const MAX_SECONDS = 180;
+  const SHORTCUT = "mod+shift+v";
 
   const SAMPLE_RATE = 16000;
   const BUTTON_ID = "pi-web-voice-button";
@@ -85,12 +85,11 @@
 
   // pi-web ships English, Simplified Chinese and Traditional Chinese.
   const ATTACH_TITLES = ["Attach image", "附加图片", "附加圖片"];
-  const SEND_LABELS = ["Send", "发送", "發送"];
 
-  const zh = (CONFIG.language || navigator.language || "").toLowerCase().startsWith("zh");
+  const zh = (navigator.language || "").toLowerCase().startsWith("zh");
   const T = zh
     ? {
-        idle: "语音输入",
+        idle: "语音输入 — 点击开始，或按住说话",
         recording: "正在录音 — 点击停止",
         holding: "松开结束录音",
         working: "转写中…",
@@ -100,7 +99,7 @@
         failed: "转写失败",
       }
     : {
-        idle: "Voice input",
+        idle: "Voice input — click, or press and hold",
         recording: "Recording — click to stop",
         holding: "Release to stop",
         working: "Transcribing…",
@@ -184,7 +183,7 @@
         if (!this.active) return;
         const input = event.inputBuffer.getChannelData(0);
         this.chunks.push(downsample(input, this.context.sampleRate, SAMPLE_RATE));
-        if ((Date.now() - this.startedAt) / 1000 > CONFIG.maxSeconds) ui.stop();
+        if ((Date.now() - this.startedAt) / 1000 > MAX_SECONDS) ui.stop();
       };
 
       // Route through a silent gain node so the graph runs without echoing
@@ -255,13 +254,7 @@
     textarea.focus();
   }
 
-  function submit(textarea) {
-    const row = textarea.parentElement;
-    const button = Array.from(row?.querySelectorAll("button") || []).find((candidate) =>
-      SEND_LABELS.some((label) => candidate.textContent.trim() === label),
-    );
-    if (button && !button.disabled) button.click();
-  }
+
 
   // ── button ───────────────────────────────────────────────────────────────
 
@@ -311,21 +304,30 @@
         "transition:color .2s,background .2s",
       ].join(";");
 
-      if (CONFIG.mode === "hold") {
-        button.addEventListener("pointerdown", (event) => {
-          event.preventDefault();
-          this.start();
-        });
-        const release = () => this.state === "recording" && this.stop();
-        button.addEventListener("pointerup", release);
-        button.addEventListener("pointerleave", release);
-        button.addEventListener("pointercancel", release);
-      } else {
-        button.addEventListener("click", (event) => {
-          event.preventDefault();
-          this.toggle();
-        });
-      }
+      // One button, two gestures. A quick tap latches recording on and the
+      // next tap ends it; holding records only while held.
+      let pressedAt = 0;
+      let latched = false;
+
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        if (this.state === "recording") {
+          latched = false;
+          this.stop();
+          return;
+        }
+        pressedAt = Date.now();
+        latched = false;
+        this.start();
+      });
+
+      const release = () => {
+        if (this.state !== "recording" || latched) return;
+        if (Date.now() - pressedAt < HOLD_THRESHOLD_MS) latched = true; // a tap
+        else this.stop(); // a hold
+      };
+      button.addEventListener("pointerup", release);
+      button.addEventListener("pointercancel", release);
 
       anchor.parentElement.insertBefore(button, anchor);
       this.button = button;
@@ -339,9 +341,7 @@
       this.button.style.background = this.state === "recording" ? "rgba(229,83,75,.12)" : "none";
       this.button.title =
         this.state === "recording"
-          ? CONFIG.mode === "hold"
-            ? T.holding
-            : T.recording
+          ? T.recording
           : this.state === "working"
             ? T.working
             : T.idle;
@@ -429,11 +429,10 @@
         if (!text) {
           this.toast(T.empty);
         } else {
+          // Always inserted, never sent: a wrong term is one keystroke from
+          // being fixed, and Enter is right there when it is correct.
           const textarea = findComposer();
-          if (textarea) {
-            insertAtCaret(textarea, text);
-            if (CONFIG.autoSend) submit(textarea);
-          }
+          if (textarea) insertAtCaret(textarea, text);
         }
       } catch (error) {
         this.toast(`${T.failed}: ${error.message}`);
@@ -452,7 +451,7 @@
   // ── wiring ───────────────────────────────────────────────────────────────
 
   function matchesShortcut(event) {
-    const parts = CONFIG.shortcut.toLowerCase().split("+");
+    const parts = SHORTCUT.toLowerCase().split("+");
     const key = parts[parts.length - 1];
     const wantMod = parts.includes("mod");
     const wantShift = parts.includes("shift");
@@ -472,7 +471,7 @@
     ui.toggle();
   });
 
-  if (CONFIG.mediaSession && "mediaSession" in navigator) {
+  if ("mediaSession" in navigator) {
     // Headphone play/pause — a squeeze on AirPods starts and stops recording.
     try {
       navigator.mediaSession.setActionHandler("play", () => ui.toggle());

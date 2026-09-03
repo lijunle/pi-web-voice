@@ -2,8 +2,9 @@
 
 Voice input for [pi-web](https://github.com/agegr/pi-web), added from the outside.
 
-A microphone button appears in the chat composer. Hold or click it, speak, and the
-transcript lands at your caret — review it, then send. pi-web is never modified: the
+A microphone button appears in the chat composer. Tap it to start and tap again to stop,
+or press and hold to talk and release when done — the gesture decides, there is nothing
+to configure. The transcript lands at your caret; you review it, then send. pi-web is never modified: the
 whole thing is one `--require` hook that injects a single `<script>` tag into HTML
 responses and serves two routes of its own.
 
@@ -112,7 +113,6 @@ which takes up to 500 entries, so the whole list fits.
 | --- | --- | --- |
 | `AZURE_SPEECH_ENDPOINT` | — | Resource name or full `https://…cognitiveservices.azure.com` |
 | `AZURE_SPEECH_KEY` | — | Resource key |
-| `PI_VOICE_STYLE` | `clean` | `clean` drops fillers, `verbatim` keeps them |
 
 ### `azure-openai` — gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper
 
@@ -167,8 +167,14 @@ vocabulary is mined per request instead:
    those right already.
 3. What you typed yourself counts more than what the assistant wrote, and recent text
    counts more than old text.
-4. With no session yet, the project's recent conversations are used instead. With
-   neither, nothing is sent — no invented vocabulary.
+4. The conversation you are in outweighs the project's older ones. With no session yet,
+   the project's history is all there is. With neither, nothing is sent — no invented
+   vocabulary.
+
+Ranking is by frequency, not recency. Recency was tried and measured worse: a few turns
+on a side topic would evict the project's durable vocabulary, and the budget is small —
+**MAI-Transcribe accepts at most 50 phrases**, whatever the phrase-list documentation
+suggests.
 
 Inspect it any time:
 
@@ -179,7 +185,6 @@ curl 'http://127.0.0.1:30141/__voice/terms?cwd=/path/to/project'
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PI_VOICE_CONTEXT` | `project` | `project` adds the directory's recent sessions, `session` is the current one only, `off` sends nothing |
 
 **Thinking blocks, tool arguments and tool results are never read** — they are noisy and
 they are where secrets live. Anything resembling a credential is dropped as well: known
@@ -187,10 +192,10 @@ key prefixes, hex digests, base64 blobs, and long separator-free mixed strings.
 
 ## Every setting
 
-Fourteen variables, and you only ever touch a handful: eight are credentials for three
-mutually exclusive backends, and the rest have defaults worth keeping. Anything with one
-correct answer — route prefix, API versions, model name, timeouts, context window sizes,
-keyboard shortcut — is a constant in `lib/config.cjs`, not a knob.
+Eleven variables, eight of which are credentials for three mutually exclusive backends.
+That leaves three, and two of those you will never touch. Anything with one correct
+answer — route prefix, API versions, model name, transcription style, timeouts, context
+window sizes, keyboard shortcut — is a constant in `lib/config.cjs`, not a knob.
 
 **Credentials** — set one group; the backend is chosen from whichever is present.
 
@@ -205,10 +210,7 @@ keyboard shortcut — is a constant in `lib/config.cjs`, not a knob.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PI_VOICE_PROVIDER` | inferred | `azure-speech`, `azure-openai`, `openai`, `mock`. Only needed to break a tie or force the mock |
-| `PI_VOICE_CONTEXT` | `project` | `project`, `session`, or `off` |
-| `PI_VOICE_MODE` | `toggle` | `toggle` = click to start and stop, `hold` = press and hold |
-| `PI_VOICE_AUTO_SEND` | `0` | `1` submits immediately instead of waiting for review |
-| `PI_VOICE_STYLE` | `clean` | MAI only: `clean` drops fillers, `verbatim` keeps them |
+| `PI_VOICE_CONTEXT` | `on` | `off` stops reading your sessions entirely |
 | `PI_VOICE_ENV` | `~/.pi/agent/voice.env` | Where to read the variables above from |
 
 The recognition language is never set, on purpose: automatic language identification and

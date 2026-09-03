@@ -34,7 +34,7 @@ if (!global.__PI_WEB_VOICE_INSTALLED__) {
     onError: (error) => console.error("[pi-web-voice]", error),
     onListen: () =>
       console.log(
-        `[pi-web-voice] active · provider=${config.provider} · context=${config.context.scope}`,
+        `[pi-web-voice] active · provider=${config.provider}`,
       ),
   });
 }
