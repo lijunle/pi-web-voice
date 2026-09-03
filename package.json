@@ -1,0 +1,35 @@
+{
+  "name": "pi-web-voice",
+  "version": "0.1.0",
+  "description": "Voice input for pi-web. A NODE_OPTIONS hook that injects a microphone button into the chat composer and transcribes speech with Azure AI Speech, Azure OpenAI, or any OpenAI-compatible endpoint. No fork, no patching, no rebuild.",
+  "keywords": [
+    "pi",
+    "pi-web",
+    "pi-coding-agent",
+    "voice",
+    "dictation",
+    "speech-to-text",
+    "azure",
+    "whisper"
+  ],
+  "license": "MIT",
+  "main": "hook.cjs",
+  "bin": {
+    "pi-web-voice": "bin/pi-web-voice.js"
+  },
+  "files": [
+    "hook.cjs",
+    "lib",
+    "bin",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/patch.test.mjs",
+    "test:e2e": "node test/e2e-edge.mjs"
+  }
+}

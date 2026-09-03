@@ -1,0 +1,433 @@
+/**
+ * pi-web-voice — browser side.
+ *
+ * Adds a microphone button to the pi-web composer. Recording is captured as
+ * 16 kHz mono PCM WAV in the page, posted to the hook's /transcribe route, and
+ * the returned text is inserted at the caret. Nothing is sent anywhere except
+ * the pi-web origin you are already talking to.
+ */
+(() => {
+  "use strict";
+
+  const CONFIG = Object.assign(
+    {
+      prefix: "/__voice",
+      provider: "mock",
+      mode: "toggle", // "toggle" | "hold"
+      autoSend: false,
+      mediaSession: true,
+      shortcut: "mod+shift+v",
+      maxSeconds: 180,
+      language: "",
+    },
+    window.__PI_WEB_VOICE__ || {},
+  );
+
+  const SAMPLE_RATE = 16000;
+  const BUTTON_ID = "pi-web-voice-button";
+
+  // pi-web ships English, Simplified Chinese and Traditional Chinese.
+  const ATTACH_TITLES = ["Attach image", "附加图片", "附加圖片"];
+  const SEND_LABELS = ["Send", "发送", "發送"];
+
+  const zh = (CONFIG.language || navigator.language || "").toLowerCase().startsWith("zh");
+  const T = zh
+    ? {
+        idle: "语音输入",
+        recording: "正在录音 — 点击停止",
+        holding: "松开结束录音",
+        working: "转写中…",
+        insecure: "浏览器只在 HTTPS 或 localhost 下允许使用麦克风",
+        denied: "麦克风权限被拒绝",
+        empty: "没有识别到语音",
+        failed: "转写失败",
+      }
+    : {
+        idle: "Voice input",
+        recording: "Recording — click to stop",
+        holding: "Release to stop",
+        working: "Transcribing…",
+        insecure: "Microphone needs HTTPS or localhost",
+        denied: "Microphone permission denied",
+        empty: "No speech detected",
+        failed: "Transcription failed",
+      };
+
+  // ── audio ────────────────────────────────────────────────────────────────
+
+  /** Averages a Float32 buffer down to the target rate. */
+  function downsample(input, fromRate, toRate) {
+    if (fromRate === toRate) return input;
+    const ratio = fromRate / toRate;
+    const output = new Float32Array(Math.round(input.length / ratio));
+    for (let i = 0; i < output.length; i += 1) {
+      const start = Math.round(i * ratio);
+      const end = Math.min(Math.round((i + 1) * ratio), input.length);
+      let sum = 0;
+      for (let j = start; j < end; j += 1) sum += input[j];
+      output[i] = end > start ? sum / (end - start) : 0;
+    }
+    return output;
+  }
+
+  function encodeWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const ascii = (offset, text) => {
+      for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+    };
+
+    ascii(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    ascii(8, "WAVEfmt ");
+    view.setUint32(16, 16, true); // PCM chunk size
+    view.setUint16(20, 1, true); // format: PCM
+    view.setUint16(22, 1, true); // channels: mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // byte rate
+    view.setUint16(32, 2, true); // block align
+    view.setUint16(34, 16, true); // bits per sample
+    ascii(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i += 1, offset += 2) {
+      const clamped = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+  }
+
+  const recorder = {
+    active: false,
+    stream: null,
+    context: null,
+    node: null,
+    chunks: [],
+    startedAt: 0,
+
+    async start() {
+      if (!window.isSecureContext) throw new Error(T.insecure);
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error(T.insecure);
+
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
+      this.context = new (window.AudioContext || window.webkitAudioContext)();
+      if (this.context.state === "suspended") await this.context.resume();
+
+      const source = this.context.createMediaStreamSource(this.stream);
+      // ScriptProcessor is deprecated but is the only node supported by every
+      // browser without shipping a separate worklet module.
+      this.node = this.context.createScriptProcessor(4096, 1, 1);
+      this.chunks = [];
+      this.startedAt = Date.now();
+
+      this.node.onaudioprocess = (event) => {
+        if (!this.active) return;
+        const input = event.inputBuffer.getChannelData(0);
+        this.chunks.push(downsample(input, this.context.sampleRate, SAMPLE_RATE));
+        if ((Date.now() - this.startedAt) / 1000 > CONFIG.maxSeconds) ui.stop();
+      };
+
+      // Route through a silent gain node so the graph runs without echoing
+      // the microphone back to the speakers.
+      const mute = this.context.createGain();
+      mute.gain.value = 0;
+      source.connect(this.node);
+      this.node.connect(mute);
+      mute.connect(this.context.destination);
+
+      this.active = true;
+    },
+
+    stop() {
+      this.active = false;
+      try {
+        this.node?.disconnect();
+        this.stream?.getTracks().forEach((track) => track.stop());
+        this.context?.close();
+      } catch {
+        /* teardown is best effort */
+      }
+      this.node = null;
+      this.stream = null;
+      this.context = null;
+
+      const total = this.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (const chunk of this.chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      this.chunks = [];
+      return merged.length > 0 ? encodeWav(merged, SAMPLE_RATE) : null;
+    },
+  };
+
+  // ── composer ─────────────────────────────────────────────────────────────
+
+  function findComposer() {
+    const areas = Array.from(document.querySelectorAll("textarea")).filter(
+      (area) => area.offsetParent !== null,
+    );
+    return areas[areas.length - 1] || null;
+  }
+
+  function insertAtCaret(textarea, text) {
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? start;
+    const before = textarea.value.slice(0, start);
+    const after = textarea.value.slice(end);
+    const spacer = before && !/\s$/.test(before) ? " " : "";
+    const next = before + spacer + text + after;
+
+    // React tracks the previous value on the DOM node, so assigning `.value`
+    // directly is ignored. Going through the prototype setter and dispatching
+    // a real input event makes React pick the change up.
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    ).set;
+    setter.call(textarea, next);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+
+    const caret = before.length + spacer.length + text.length;
+    textarea.setSelectionRange(caret, caret);
+    textarea.focus();
+  }
+
+  function submit(textarea) {
+    const row = textarea.parentElement;
+    const button = Array.from(row?.querySelectorAll("button") || []).find((candidate) =>
+      SEND_LABELS.some((label) => candidate.textContent.trim() === label),
+    );
+    if (button && !button.disabled) button.click();
+  }
+
+  // ── button ───────────────────────────────────────────────────────────────
+
+  const MIC_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>`;
+
+  const ui = {
+    button: null,
+    state: "idle", // idle | recording | working
+    timer: null,
+
+    findAnchor() {
+      for (const title of ATTACH_TITLES) {
+        const attach = document.querySelector(`button[title="${title}"]`);
+        if (attach) return attach;
+      }
+      return document.querySelector(".model-selector.is-toolbar");
+    },
+
+    mount() {
+      if (document.getElementById(BUTTON_ID)) return;
+      const anchor = this.findAnchor();
+      if (!anchor?.parentElement) return;
+
+      const button = document.createElement("button");
+      button.id = BUTTON_ID;
+      button.type = "button";
+      button.title = T.idle;
+      button.setAttribute("aria-label", T.idle);
+      button.innerHTML = MIC_SVG;
+      button.style.cssText = [
+        "position:relative",
+        "display:flex",
+        "align-items:center",
+        "justify-content:center",
+        "gap:4px",
+        "min-width:26px",
+        "height:26px",
+        "padding:0 4px",
+        "background:none",
+        "border:none",
+        "color:var(--text-dim)",
+        "cursor:pointer",
+        "border-radius:5px",
+        "flex-shrink:0",
+        "font-size:11px",
+        "font-variant-numeric:tabular-nums",
+        "transition:color .2s,background .2s",
+      ].join(";");
+
+      if (CONFIG.mode === "hold") {
+        button.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          this.start();
+        });
+        const release = () => this.state === "recording" && this.stop();
+        button.addEventListener("pointerup", release);
+        button.addEventListener("pointerleave", release);
+        button.addEventListener("pointercancel", release);
+      } else {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          this.toggle();
+        });
+      }
+
+      anchor.parentElement.insertBefore(button, anchor);
+      this.button = button;
+      this.render();
+    },
+
+    render(extra = "") {
+      if (!this.button) return;
+      const colors = { idle: "var(--text-dim)", recording: "#e5534b", working: "var(--accent, #7aa2f7)" };
+      this.button.style.color = colors[this.state];
+      this.button.style.background = this.state === "recording" ? "rgba(229,83,75,.12)" : "none";
+      this.button.title =
+        this.state === "recording"
+          ? CONFIG.mode === "hold"
+            ? T.holding
+            : T.recording
+          : this.state === "working"
+            ? T.working
+            : T.idle;
+      const label = this.button.querySelector("span");
+      if (extra) {
+        if (label) label.textContent = extra;
+        else {
+          const span = document.createElement("span");
+          span.textContent = extra;
+          this.button.appendChild(span);
+        }
+      } else if (label) {
+        label.remove();
+      }
+    },
+
+    toast(message, isError = true) {
+      const toast = document.createElement("div");
+      toast.textContent = message;
+      toast.style.cssText = [
+        "position:fixed",
+        "left:50%",
+        "bottom:80px",
+        "transform:translateX(-50%)",
+        "z-index:99999",
+        "padding:8px 14px",
+        "border-radius:8px",
+        "font-size:13px",
+        "color:#fff",
+        `background:${isError ? "#b4342c" : "#2f6f4f"}`,
+        "box-shadow:0 6px 24px rgba(0,0,0,.35)",
+      ].join(";");
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 4000);
+    },
+
+    async start() {
+      if (this.state !== "idle") return;
+      try {
+        await recorder.start();
+      } catch (error) {
+        const denied = error?.name === "NotAllowedError";
+        this.toast(denied ? T.denied : error.message || T.failed);
+        return;
+      }
+      this.state = "recording";
+      this.render("0:00");
+      this.timer = setInterval(() => {
+        const seconds = Math.floor((Date.now() - recorder.startedAt) / 1000);
+        this.render(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+      }, 250);
+    },
+
+    async stop() {
+      if (this.state !== "recording") return;
+      clearInterval(this.timer);
+      const wav = recorder.stop();
+      this.state = "working";
+      this.render();
+
+      if (!wav) {
+        this.state = "idle";
+        this.render();
+        this.toast(T.empty);
+        return;
+      }
+
+      try {
+        const response = await fetch(`${CONFIG.prefix}/transcribe`, {
+          method: "POST",
+          headers: { "content-type": "audio/wav" },
+          body: wav,
+          credentials: "include",
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || T.failed);
+
+        const text = (result.text || "").trim();
+        if (!text) {
+          this.toast(T.empty);
+        } else {
+          const textarea = findComposer();
+          if (textarea) {
+            insertAtCaret(textarea, text);
+            if (CONFIG.autoSend) submit(textarea);
+          }
+        }
+      } catch (error) {
+        this.toast(`${T.failed}: ${error.message}`);
+      } finally {
+        this.state = "idle";
+        this.render();
+      }
+    },
+
+    toggle() {
+      if (this.state === "recording") this.stop();
+      else if (this.state === "idle") this.start();
+    },
+  };
+
+  // ── wiring ───────────────────────────────────────────────────────────────
+
+  function matchesShortcut(event) {
+    const parts = CONFIG.shortcut.toLowerCase().split("+");
+    const key = parts[parts.length - 1];
+    const wantMod = parts.includes("mod");
+    const wantShift = parts.includes("shift");
+    const wantAlt = parts.includes("alt");
+    const mod = event.metaKey || event.ctrlKey;
+    return (
+      event.key.toLowerCase() === key &&
+      mod === wantMod &&
+      event.shiftKey === wantShift &&
+      event.altKey === wantAlt
+    );
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (!matchesShortcut(event)) return;
+    event.preventDefault();
+    ui.toggle();
+  });
+
+  if (CONFIG.mediaSession && "mediaSession" in navigator) {
+    // Headphone play/pause — a squeeze on AirPods starts and stops recording.
+    try {
+      navigator.mediaSession.setActionHandler("play", () => ui.toggle());
+      navigator.mediaSession.setActionHandler("pause", () => ui.toggle());
+    } catch {
+      /* not supported here */
+    }
+  }
+
+  // pi-web re-renders the composer on session switches, so keep re-mounting.
+  const observer = new MutationObserver(() => ui.mount());
+  const boot = () => {
+    ui.mount();
+    observer.observe(document.body, { childList: true, subtree: true });
+  };
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+
+  window.__piWebVoice = { ui, recorder, config: CONFIG };
+})();
