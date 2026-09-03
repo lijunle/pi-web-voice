@@ -25,35 +25,59 @@ layer instead, which means `npm update -g @agegr/pi-web` needs no re-apply.
 ## Quick start
 
 ```bash
-git clone https://github.com/lijunle/pi-web-voice.git ~/pi-web-voice
-npm install -g ~/pi-web-voice
+npm install -g pi-web-voice
 
-# 1. no credentials needed — proves the button and the round trip work
-pi-web-voice
-
-# 2. put your key in a file, then check it
-install -m 600 /dev/null ~/.pi/agent/voice.env
-cat >> ~/.pi/agent/voice.env <<'EOF'
-AZURE_SPEECH_ENDPOINT=https://my-resource.cognitiveservices.azure.com
-AZURE_SPEECH_KEY=...
-EOF
-
-pi-web-voice doctor
-pi-web-voice
+pi-web-voice init      # writes ~/.pi/agent/voice.env, mode 0600
+                       # uncomment one backend in it and add the key
+pi-web-voice doctor    # proves the key, region and model before you look for a mic bug
+pi-web-voice           # starts pi-web with the microphone button
 ```
 
 `pi-web-voice` starts pi-web with the hook and passes every argument through, so
-`pi-web-voice -p 8080` works. If you would rather not install anything:
+`pi-web-voice -p 8080` works. With no key at all it runs a mock backend, which is enough
+to prove the button and the round trip.
 
-```bash
-NODE_OPTIONS="--require ~/pi-web-voice/hook.cjs" pi-web
-```
+Nothing is compiled and there are no dependencies, so `npx pi-web-voice` works too, and a
+`git clone` plus `npm install -g .` works if you would rather run from source.
 
 You should see this on startup, and a microphone next to the image-attach button:
 
 ```
 [pi-web-voice] active · provider=azure-speech · context=project
 ```
+
+## Running it as a service
+
+If pi-web already runs under launchd or systemd, add one environment variable to the
+service rather than changing how it starts. `hook-path` prints the value regardless of
+where npm installed the package:
+
+```bash
+pi-web-voice hook-path
+#   /opt/homebrew/lib/node_modules/pi-web-voice/hook.cjs
+```
+
+launchd — add to `EnvironmentVariables` in the plist, then reload it:
+
+```xml
+<key>NODE_OPTIONS</key>
+<string>--require /opt/homebrew/lib/node_modules/pi-web-voice/hook.cjs</string>
+```
+
+```bash
+launchctl bootout gui/$(id -u)/com.agegr.pi-web
+lsof -ti:30141 | xargs kill -9 2>/dev/null; pkill -f next-server; sleep 2
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agegr.pi-web.plist
+```
+
+`launchctl kickstart -k` restarts the job from launchd's in-memory copy and will **not**
+pick up plist changes. It also leaves the `next start` child orphaned holding the port,
+which is what the second line clears.
+
+systemd — `Environment=NODE_OPTIONS=--require /path/to/hook.cjs`, then
+`systemctl --user daemon-reload && systemctl --user restart pi-web`.
+
+Removing that one variable disables everything; pi-web itself was never modified.
 
 ## Where the key goes
 
