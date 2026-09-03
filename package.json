@@ -29,7 +29,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "test": "node --test test/patch.test.mjs",
+    "test": "node test/run.mjs",
     "test:e2e": "node test/e2e-edge.mjs"
   }
 }
