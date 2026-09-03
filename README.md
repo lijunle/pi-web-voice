@@ -195,11 +195,29 @@ The count is of **words, not entries** — a two-word phrase costs two slots —
 single-word terms are mined, and a rejected vocabulary is retried once without the
 phrase list rather than losing the recording.
 
-MAI-Transcribe-2 is used despite the smaller budget, because the larger one does not buy
-anything. On the same recording, `MAI-Transcribe-2` with 50 terms produced
-`hook.cjs` and `phraseList` correctly, while `MAI-Transcribe-1.5` with 200 terms produced
-`hook c js` and `phrase list` — worse than its own no-vocabulary baseline, and twice as
-slow.
+MAI-Transcribe-2 is preferred over 1.5 despite the smaller budget, because the larger one
+does not buy anything: on the same recording, 1.5 with 200 terms produced `hook c js` and
+`phrase list`, worse than its own no-vocabulary baseline and twice as slow.
+
+### Backends measured against each other
+
+Three Chinese-English sentences full of identifiers, same mined vocabulary, list prices:
+
+| | MAI-Transcribe-2 | gpt-transcribe |
+| --- | --- | --- |
+| Exact technical strings | good | **better** — the only one to get `MAI-Transcribe-2` intact |
+| Punctuation | none | **adds it** |
+| Dropped content | none observed | **dropped a clause once**, silently |
+| Latency | **~1.0 s** | ~2.6 s |
+| Price | $0.36 / audio hour | **$0.27 / audio hour** |
+
+Vocabulary is what decides accuracy, not the backend: without it, the same clip came back
+as `hookcjs` from one and `Hugging CJS` from the other. With it, both produced `hook.cjs`.
+
+Silent omission is the reason this is not a clear win. Garbled text is visible in the
+composer and gets fixed; a missing clause is not. Try both on your own recordings —
+these samples were synthesized speech, which articulates far more cleanly than anyone
+actually dictating.
 
 Inspect it any time:
 
