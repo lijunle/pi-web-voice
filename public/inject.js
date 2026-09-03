@@ -258,7 +258,28 @@
 
   // ── button ───────────────────────────────────────────────────────────────
 
-  const MIC_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>`;
+  // A filled glyph reads as an ordinary control; the outlined one looked
+  // greyed out next to pi-web's own toolbar icons.
+  const MIC_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14.5a3.25 3.25 0 0 0 3.25-3.25v-6a3.25 3.25 0 0 0-6.5 0v6A3.25 3.25 0 0 0 12 14.5z"/><path d="M17.75 11a.85.85 0 0 0-1.7 0 4.05 4.05 0 0 1-8.1 0 .85.85 0 0 0-1.7 0 5.75 5.75 0 0 0 4.9 5.68v1.62h-1.9a.85.85 0 0 0 0 1.7h5.5a.85.85 0 0 0 0-1.7h-1.9v-1.62A5.75 5.75 0 0 0 17.75 11z"/></svg>`;
+
+  const SPINNER_SVG = `<svg class="pi-voice-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>`;
+
+  const STYLE_ID = "pi-web-voice-style";
+
+  function ensureStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+@keyframes pi-voice-spin { to { transform: rotate(360deg); } }
+@keyframes pi-voice-pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+.pi-voice-spin { animation: pi-voice-spin .8s linear infinite; transform-origin: 50% 50%; }
+.pi-voice-pulse { animation: pi-voice-pulse 1.2s ease-in-out infinite; }
+#${BUTTON_ID}:hover { background: var(--bg-hover); color: var(--text); }
+#${BUTTON_ID}:active { transform: scale(.94); }
+`;
+    document.head.appendChild(style);
+  }
 
   const ui = {
     button: null,
@@ -277,13 +298,13 @@
       if (document.getElementById(BUTTON_ID)) return;
       const anchor = this.findAnchor();
       if (!anchor?.parentElement) return;
+      ensureStyles();
 
       const button = document.createElement("button");
       button.id = BUTTON_ID;
       button.type = "button";
       button.title = T.idle;
       button.setAttribute("aria-label", T.idle);
-      button.innerHTML = MIC_SVG;
       button.style.cssText = [
         "position:relative",
         "display:flex",
@@ -292,16 +313,16 @@
         "gap:4px",
         "min-width:26px",
         "height:26px",
-        "padding:0 4px",
+        "padding:0 5px",
         "background:none",
         "border:none",
-        "color:var(--text-dim)",
+        "color:var(--text-muted)",
         "cursor:pointer",
         "border-radius:5px",
         "flex-shrink:0",
         "font-size:11px",
         "font-variant-numeric:tabular-nums",
-        "transition:color .2s,background .2s",
+        "transition:color .15s,background .15s,transform .1s",
       ].join(";");
 
       // One button, two gestures. A quick tap latches recording on and the
@@ -336,26 +357,26 @@
 
     render(extra = "") {
       if (!this.button) return;
-      const colors = { idle: "var(--text-dim)", recording: "#e5534b", working: "var(--accent, #7aa2f7)" };
-      this.button.style.color = colors[this.state];
-      this.button.style.background = this.state === "recording" ? "rgba(229,83,75,.12)" : "none";
-      this.button.title =
-        this.state === "recording"
-          ? T.recording
-          : this.state === "working"
-            ? T.working
-            : T.idle;
-      const label = this.button.querySelector("span");
-      if (extra) {
-        if (label) label.textContent = extra;
-        else {
-          const span = document.createElement("span");
-          span.textContent = extra;
-          this.button.appendChild(span);
-        }
-      } else if (label) {
-        label.remove();
-      }
+
+      const spinning = this.state === "working";
+      const recording = this.state === "recording";
+
+      this.button.style.color = recording
+        ? "#e5534b"
+        : spinning
+          ? "var(--accent)"
+          : "var(--text-muted)";
+      this.button.style.background = recording ? "rgba(229,83,75,.12)" : "";
+      this.button.title = recording ? T.recording : spinning ? T.working : T.idle;
+      this.button.setAttribute("aria-label", this.button.title);
+      this.button.setAttribute("aria-busy", spinning ? "true" : "false");
+
+      const icon = spinning
+        ? SPINNER_SVG
+        : recording
+          ? MIC_SVG.replace("<svg ", '<svg class="pi-voice-pulse" ')
+          : MIC_SVG;
+      this.button.innerHTML = extra ? `${icon}<span>${extra}</span>` : icon;
     },
 
     toast(message, isError = true) {
