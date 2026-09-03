@@ -21,7 +21,16 @@ const hook = path.join(__dirname, "..", "hook.cjs");
 // `pi-web-voice doctor [file.wav]` checks the speech backend and exits.
 if (args[0] === "doctor") {
   const { doctor } = require("../lib/doctor.cjs");
-  doctor(args.slice(1)).then((code) => process.exit(code));
+  doctor(args.slice(1)).then((code) => {
+    // Setting the code rather than calling process.exit lets the HTTP
+    // connection finish closing. Forcing an exit mid-teardown trips a libuv
+    // assertion on Windows: !(handle->flags & UV_HANDLE_CLOSING).
+    process.exitCode = code;
+    // Keep-alive sockets can still hold the loop open for a few seconds after
+    // the answer is in hand. This timer does not itself keep the process
+    // alive, and by the time it fires nothing is mid-close.
+    setTimeout(() => process.exit(code), 750).unref();
+  });
   return;
 }
 
