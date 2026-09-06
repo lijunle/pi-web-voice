@@ -97,6 +97,7 @@
         denied: "麦克风权限被拒绝",
         empty: "没有识别到语音",
         failed: "转写失败",
+        noComposer: "找不到输入框，转写结果",
       }
     : {
         idle: "Voice input — click, or press and hold",
@@ -107,6 +108,7 @@
         denied: "Microphone permission denied",
         empty: "No speech detected",
         failed: "Transcription failed",
+        noComposer: "No composer found; transcript",
       };
 
   // ── audio ────────────────────────────────────────────────────────────────
@@ -224,10 +226,26 @@
 
   // ── composer ─────────────────────────────────────────────────────────────
 
+  // "The last visible textarea" is not good enough: pi-web's workspace
+  // terminal is xterm.js, which keeps a hidden IME helper textarea mounted
+  // after the composer. Writing there drops the transcript at best, and at
+  // worst hands it to the shell.
+  function isComposerCandidate(area) {
+    if (area.offsetParent === null) return false;
+    if (area.classList.contains("xterm-helper-textarea")) return false;
+    return !area.closest(".xterm");
+  }
+
   function findComposer() {
-    const areas = Array.from(document.querySelectorAll("textarea")).filter(
-      (area) => area.offsetParent !== null,
-    );
+    // The button was mounted next to the composer's own toolbar, so walking up
+    // from it finds the right textarea even when the page holds several.
+    const button = document.getElementById(BUTTON_ID);
+    for (let node = button?.parentElement; node; node = node.parentElement) {
+      const nearby = Array.from(node.querySelectorAll("textarea")).filter(isComposerCandidate);
+      if (nearby.length) return nearby[nearby.length - 1];
+    }
+
+    const areas = Array.from(document.querySelectorAll("textarea")).filter(isComposerCandidate);
     return areas[areas.length - 1] || null;
   }
 
@@ -453,7 +471,10 @@
           // Always inserted, never sent: a wrong term is one keystroke from
           // being fixed, and Enter is right there when it is correct.
           const textarea = findComposer();
+          // Never fail silently: a transcript with nowhere to go is shown
+          // rather than dropped, so it can still be copied by hand.
           if (textarea) insertAtCaret(textarea, text);
+          else this.toast(`${T.noComposer}: ${text}`);
         }
       } catch (error) {
         this.toast(`${T.failed}: ${error.message}`);
@@ -516,6 +537,7 @@
     ui,
     recorder,
     config: CONFIG,
+    findComposer,
     get sessionId() {
       return sessionId;
     },

@@ -132,6 +132,30 @@ try {
   check("button mounted", await evaluate(`!!document.getElementById("pi-web-voice-button")`));
   check("secure context", await evaluate(`window.isSecureContext`));
 
+  // pi-web's workspace terminal keeps an xterm.js IME helper textarea mounted
+  // after the composer. It used to win "the last visible textarea" and swallow
+  // every transcript, so stand one up and prove it is ignored.
+  await evaluate(`(() => {
+    const terminal = document.createElement("div");
+    terminal.className = "xterm";
+    const helper = document.createElement("textarea");
+    helper.className = "xterm-helper-textarea";
+    terminal.appendChild(helper);
+    document.body.appendChild(terminal);
+    return true;
+  })()`);
+
+  const composerClass = await evaluate(`(() => {
+    const found = window.__piWebVoice.findComposer();
+    if (!found) return "null";
+    return found.closest(".xterm") ? "terminal" : found.className || "unnamed";
+  })()`);
+  check(
+    "terminal helper textarea ignored",
+    composerClass !== "terminal" && composerClass !== "null",
+    `composer=${composerClass}`,
+  );
+
   // Headless browsers have no audio input device, so feed the recorder a
   // synthetic stream instead. Everything after capture is the real code path:
   // downsampling, WAV encoding, upload, response handling, DOM insertion.
@@ -162,8 +186,12 @@ try {
   check("returned to idle", state === "idle", `state=${state}`);
 
   const composed = await evaluate(
-    `(() => { const a=[...document.querySelectorAll("textarea")].filter(t=>t.offsetParent); return a.length?a[a.length-1].value:""; })()`,
+    `(() => { const a = window.__piWebVoice.findComposer(); return a ? a.value : ""; })()`,
   );
+  const terminalValue = await evaluate(
+    `document.querySelector(".xterm-helper-textarea")?.value ?? ""`,
+  );
+  check("terminal left untouched", terminalValue === "", `terminal=${JSON.stringify(terminalValue)}`);
   // A real speech backend returns nothing for the synthetic tone this test
   // feeds it, and the button reports that instead of inserting. Either
   // outcome proves the round trip; only a silent failure is a problem.
