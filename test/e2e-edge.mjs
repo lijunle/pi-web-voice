@@ -181,6 +181,32 @@ try {
   const afterSecondClick = await evaluate(`window.__piWebVoice.ui.state`);
   check("click() again stops it", afterSecondClick === "idle", `state=${afterSecondClick}`);
 
+  // The button has to turn red on the press, not when the microphone finally
+  // opens. getUserMedia costs a few hundred milliseconds on a phone, and
+  // painting after it read as a press the page had missed. Reading the state
+  // inside the same expression as the click proves nothing was awaited first.
+  const paintedAtOnce = await evaluate(`(() => {
+    const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = (constraints) =>
+      new Promise((resolve) => setTimeout(() => resolve(real(constraints)), 1200));
+    document.getElementById("pi-web-voice-button").click();
+    return window.__piWebVoice.ui.state;
+  })()`);
+  check("red before the microphone opens", paintedAtOnce === "recording", `state=${paintedAtOnce}`);
+
+  // Pressing again during that wait has to cancel cleanly: no empty clip sent,
+  // and no microphone left open once the stream nobody wants arrives.
+  const cancelled = await evaluate(`(() => {
+    document.getElementById("pi-web-voice-button").click();
+    return window.__piWebVoice.ui.state;
+  })()`);
+  check("press during the wait cancels", cancelled === "idle", `state=${cancelled}`);
+  await sleep(2000);
+  const settled = await evaluate(
+    `[window.__piWebVoice.ui.state, window.__piWebVoice.recorder.active].join(",")`,
+  );
+  check("orphan stream closed", settled === "idle,false", settled);
+
   // Headless browsers have no audio input device, so feed the recorder a
   // synthetic stream instead. Everything after capture is the real code path:
   // downsampling, WAV encoding, upload, response handling, DOM insertion.

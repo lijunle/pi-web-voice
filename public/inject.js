@@ -298,6 +298,10 @@
     button: null,
     state: "idle", // idle | recording | working
     timer: null,
+    // True from the press until the microphone actually opens. The button is
+    // already red during that window, so the state alone cannot say whether
+    // there is a stream to stop.
+    arming: false,
 
     findAnchor() {
       for (const title of ATTACH_TITLES) {
@@ -333,6 +337,10 @@
         "cursor:pointer",
         "border-radius:5px",
         "flex-shrink:0",
+        // Without this the browser holds the click back while it waits to see
+        // whether a second tap is coming to zoom the page. pi-web marks its own
+        // icon buttons the same way.
+        "touch-action:manipulation",
         "font-size:11px",
         "font-variant-numeric:tabular-nums",
         "transition:color .15s,background .15s,transform .1s",
@@ -398,17 +406,38 @@
       setTimeout(() => toast.remove(), 4000);
     },
 
+    // Paint first, ask the microphone second. getUserMedia and the audio
+    // context cost a few hundred milliseconds on a phone even when permission
+    // was granted long ago, and a button that stays grey that long reads as a
+    // press the page missed.
     async start() {
-      if (this.state !== "idle") return;
+      if (this.state !== "idle" || this.arming) return;
+      this.state = "recording";
+      this.render("0:00");
+
+      this.arming = true;
       try {
         await recorder.start();
       } catch (error) {
+        if (this.state !== "recording") return; // already pressed again
+        this.state = "idle";
+        this.render();
         const denied = error?.name === "NotAllowedError";
         this.toast(denied ? T.denied : error.message || T.failed);
         return;
+      } finally {
+        this.arming = false;
       }
-      this.state = "recording";
-      this.render("0:00");
+
+      // A second press during the wait already put the button back to idle, so
+      // the stream that just opened has no owner. Close it.
+      if (this.state !== "recording") {
+        recorder.stop();
+        return;
+      }
+
+      // The clock counts audio, not the wait: recorder.startedAt is stamped
+      // when the stream opened, so the first tick lands a beat after the press.
       this.timer = setInterval(() => {
         const seconds = Math.floor((Date.now() - recorder.startedAt) / 1000);
         this.render(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
@@ -418,6 +447,15 @@
     async stop() {
       if (this.state !== "recording") return;
       clearInterval(this.timer);
+
+      // Pressed again before the microphone opened. There is no audio to send,
+      // and start() closes the stream when it finally arrives.
+      if (this.arming) {
+        this.state = "idle";
+        this.render();
+        return;
+      }
+
       const wav = recorder.stop();
       this.state = "working";
       this.render();
