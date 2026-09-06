@@ -109,6 +109,27 @@ unavailable. Pick one:
 
 iOS Safari has no override, so a real certificate is the only path there.
 
+## When to start talking
+
+The button turns red the instant you press it, but the microphone is not open yet:
+`getUserMedia` and the audio session take a few hundred milliseconds on a phone, and no
+audio exists before the browser hands the stream over. Anything said in that window is
+gone — not dropped by pi-web-voice, never recorded at all.
+
+So the button says which is which. `…` means the press landed and the microphone is
+opening. The clock replacing it — `0:00`, with the icon pulsing — means the first sample
+is in. **Start talking when the digits appear**, and nothing can be lost, because the
+clock counts recorded audio rather than time since the press.
+
+The wait is real, so it is measured rather than guessed. Every transcription logs it:
+
+```
+[pi-web-voice] 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
+```
+
+The audio context is kept for the life of the page and only suspended between takes, so
+that number is largest on the first recording after a page load and smaller afterwards.
+
 ## Backends
 
 Set `PI_VOICE_PROVIDER`, or let it be inferred from whichever credentials exist.

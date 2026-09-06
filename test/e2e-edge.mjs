@@ -190,22 +190,40 @@ try {
     navigator.mediaDevices.getUserMedia = (constraints) =>
       new Promise((resolve) => setTimeout(() => resolve(real(constraints)), 1200));
     document.getElementById("pi-web-voice-button").click();
-    return window.__piWebVoice.ui.state;
+    return [window.__piWebVoice.ui.state, document.getElementById("pi-web-voice-button").textContent].join(",");
   })()`);
-  check("red before the microphone opens", paintedAtOnce === "recording", `state=${paintedAtOnce}`);
+  check("red before the microphone opens", paintedAtOnce === "recording,\u2026", paintedAtOnce);
+
+  // ...and the clock only starts when there is audio to count, so a word said
+  // after the digits appear cannot be lost.
+  await sleep(1800);
+  const live = await evaluate(
+    `[window.__piWebVoice.ui.arming, document.getElementById("pi-web-voice-button").textContent].join(",")`,
+  );
+  check("clock starts on the first sample", live === "false,0:00", live);
+
+  const waited = await evaluate(`window.__piWebVoice.ui.waitedMs`);
+  check("wait measured", waited >= 1200, `${waited}ms`);
+
+  await evaluate(`window.__piWebVoice.ui.stop()`);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if ((await evaluate(`window.__piWebVoice.ui.state`)) === "idle") break;
+    await sleep(250);
+  }
 
   // Pressing again during that wait has to cancel cleanly: no empty clip sent,
   // and no microphone left open once the stream nobody wants arrives.
   const cancelled = await evaluate(`(() => {
+    document.getElementById("pi-web-voice-button").click();
     document.getElementById("pi-web-voice-button").click();
     return window.__piWebVoice.ui.state;
   })()`);
   check("press during the wait cancels", cancelled === "idle", `state=${cancelled}`);
   await sleep(2000);
   const settled = await evaluate(
-    `[window.__piWebVoice.ui.state, window.__piWebVoice.recorder.active].join(",")`,
+    `[window.__piWebVoice.ui.state, window.__piWebVoice.recorder.active, !!window.__piWebVoice.recorder.stream].join(",")`,
   );
-  check("orphan stream closed", settled === "idle,false", settled);
+  check("orphan stream closed", settled === "idle,false,false", settled);
 
   // Headless browsers have no audio input device, so feed the recorder a
   // synthetic stream instead. Everything after capture is the real code path:

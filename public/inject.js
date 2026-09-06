@@ -87,6 +87,7 @@
   const T = zh
     ? {
         idle: "语音输入 — 点击开始，再点一次结束",
+        opening: "正在打开麦克风 — 数字出现后再说话",
         recording: "正在录音 — 点击停止",
         working: "转写中…",
         insecure: "浏览器只在 HTTPS 或 localhost 下允许使用麦克风",
@@ -97,6 +98,7 @@
       }
     : {
         idle: "Voice input — click to start, click again to stop",
+        opening: "Opening the microphone — speak once the clock appears",
         recording: "Recording — click to stop",
         working: "Transcribing…",
         insecure: "Microphone needs HTTPS or localhost",
@@ -154,6 +156,11 @@
   const recorder = {
     active: false,
     stream: null,
+    // Kept for the life of the page and only suspended between takes.
+    // Constructing one makes the OS open an audio session; resuming a
+    // suspended one does not, so every take after the first reaches the first
+    // sample sooner. The microphone stream is not kept — that is what lights
+    // the recording indicator, and it is released on every stop.
     context: null,
     node: null,
     chunks: [],
@@ -166,7 +173,9 @@
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
-      this.context = new (window.AudioContext || window.webkitAudioContext)();
+      if (!this.context) {
+        this.context = new (window.AudioContext || window.webkitAudioContext)();
+      }
       if (this.context.state === "suspended") await this.context.resume();
 
       const source = this.context.createMediaStreamSource(this.stream);
@@ -199,13 +208,12 @@
       try {
         this.node?.disconnect();
         this.stream?.getTracks().forEach((track) => track.stop());
-        this.context?.close();
+        this.context?.suspend();
       } catch {
         /* teardown is best effort */
       }
       this.node = null;
       this.stream = null;
-      this.context = null;
 
       const total = this.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
       const merged = new Float32Array(total);
@@ -302,6 +310,8 @@
     // already red during that window, so the state alone cannot say whether
     // there is a stream to stop.
     arming: false,
+    // How long the last press waited for the microphone, in milliseconds.
+    waitedMs: 0,
 
     findAnchor() {
       for (const title of ATTACH_TITLES) {
@@ -367,6 +377,10 @@
 
       const spinning = this.state === "working";
       const recording = this.state === "recording";
+      // Red says the press landed; the pulse and the clock say the microphone
+      // is actually open. Both change at the same instant, so there is one
+      // unambiguous cue to start talking.
+      const live = recording && !this.arming;
 
       this.button.style.color = recording
         ? "#e5534b"
@@ -374,13 +388,19 @@
           ? "var(--accent)"
           : "var(--text-muted)";
       this.button.style.background = recording ? "rgba(229,83,75,.12)" : "";
-      this.button.title = recording ? T.recording : spinning ? T.working : T.idle;
+      this.button.title = live
+        ? T.recording
+        : recording
+          ? T.opening
+          : spinning
+            ? T.working
+            : T.idle;
       this.button.setAttribute("aria-label", this.button.title);
       this.button.setAttribute("aria-busy", spinning ? "true" : "false");
 
       const icon = spinning
         ? SPINNER_SVG
-        : recording
+        : live
           ? MIC_SVG.replace("<svg ", '<svg class="pi-voice-pulse" ')
           : MIC_SVG;
       this.button.innerHTML = extra ? `${icon}<span>${extra}</span>` : icon;
@@ -409,13 +429,16 @@
     // Paint first, ask the microphone second. getUserMedia and the audio
     // context cost a few hundred milliseconds on a phone even when permission
     // was granted long ago, and a button that stays grey that long reads as a
-    // press the page missed.
+    // press the page missed. What the red cannot say is that the microphone is
+    // open yet, so the wait shows an ellipsis and the clock starts on the
+    // first sample: no word said after the digits appear can be lost.
     async start() {
       if (this.state !== "idle" || this.arming) return;
+      const pressedAt = Date.now();
       this.state = "recording";
-      this.render("0:00");
-
       this.arming = true;
+      this.render("…");
+
       try {
         await recorder.start();
       } catch (error) {
@@ -436,8 +459,13 @@
         return;
       }
 
+      // Reported with the audio so the server log can show what the wait
+      // actually costs on this device, rather than what it is assumed to cost.
+      this.waitedMs = recorder.startedAt - pressedAt;
+
       // The clock counts audio, not the wait: recorder.startedAt is stamped
-      // when the stream opened, so the first tick lands a beat after the press.
+      // when the stream opened, so 0:00 means zero seconds of speech recorded.
+      this.render("0:00");
       this.timer = setInterval(() => {
         const seconds = Math.floor((Date.now() - recorder.startedAt) / 1000);
         this.render(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
@@ -472,6 +500,7 @@
         if (sessionId) query.set("session", sessionId);
         const where = currentCwd();
         if (where) query.set("cwd", where);
+        if (this.waitedMs) query.set("wait", String(this.waitedMs));
         const suffix = query.toString() ? `?${query}` : "";
 
         const response = await nativeFetch(`${CONFIG.prefix}/transcribe${suffix}`, {
