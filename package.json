@@ -1,6 +1,6 @@
 {
   "name": "pi-web-voice",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Voice input for pi-web. A NODE_OPTIONS hook that injects a microphone button into the chat composer and transcribes speech with Azure AI Speech, Azure OpenAI, or any OpenAI-compatible endpoint. No fork, no patching, no rebuild.",
   "keywords": [
     "pi",
