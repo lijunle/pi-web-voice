@@ -2,9 +2,9 @@
 
 Voice input for [pi-web](https://github.com/agegr/pi-web), added from the outside.
 
-A microphone button appears in the chat composer. Tap it to start and tap again to stop,
-or press and hold to talk and release when done — the gesture decides, there is nothing
-to configure. The transcript lands at your caret; you review it, then send. pi-web is never modified: the
+A microphone button appears in the chat composer. Click it to start, click again to stop.
+The transcript lands at your caret; you review it, then send. Keyboard, VoiceOver and the
+accessibility API can press it too. pi-web is never modified: the
 whole thing is one `--require` hook that injects a single `<script>` tag into HTML
 responses and serves two routes of its own.
 
@@ -87,7 +87,7 @@ file, loaded by Node itself — no dependency, no parser of ours:
 ```sh
 AZURE_SPEECH_ENDPOINT=https://my-resource.cognitiveservices.azure.com
 AZURE_SPEECH_KEY=abc123...
-PI_VOICE_MODE=hold
+PI_VOICE_PROVIDER=azure-speech
 ```
 
 Anything already exported wins over the file, so `AZURE_SPEECH_KEY=other pi-web-voice`

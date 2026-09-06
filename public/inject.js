@@ -17,9 +17,6 @@
     window.__PI_WEB_VOICE__ || {},
   );
 
-  // A press shorter than this latches recording on, so a tap toggles and a
-  // long press is walkie-talkie. No setting needed: the gesture says which.
-  const HOLD_THRESHOLD_MS = 400;
   const MAX_SECONDS = 180;
   const SHORTCUT = "mod+shift+v";
 
@@ -89,9 +86,8 @@
   const zh = (navigator.language || "").toLowerCase().startsWith("zh");
   const T = zh
     ? {
-        idle: "语音输入 — 点击开始，或按住说话",
+        idle: "语音输入 — 点击开始，再点一次结束",
         recording: "正在录音 — 点击停止",
-        holding: "松开结束录音",
         working: "转写中…",
         insecure: "浏览器只在 HTTPS 或 localhost 下允许使用麦克风",
         denied: "麦克风权限被拒绝",
@@ -100,9 +96,8 @@
         noComposer: "找不到输入框，转写结果",
       }
     : {
-        idle: "Voice input — click, or press and hold",
+        idle: "Voice input — click to start, click again to stop",
         recording: "Recording — click to stop",
-        holding: "Release to stop",
         working: "Transcribing…",
         insecure: "Microphone needs HTTPS or localhost",
         denied: "Microphone permission denied",
@@ -343,30 +338,16 @@
         "transition:color .15s,background .15s,transform .1s",
       ].join(";");
 
-      // One button, two gestures. A quick tap latches recording on and the
-      // next tap ends it; holding records only while held.
-      let pressedAt = 0;
-      let latched = false;
+      // One button, one gesture: click to start, click again to stop. Going
+      // through `click` rather than pointer events is what makes the keyboard,
+      // VoiceOver and the accessibility API able to press it at all — none of
+      // them produce pointer events.
+      button.addEventListener("click", () => this.toggle());
 
-      button.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        if (this.state === "recording") {
-          latched = false;
-          this.stop();
-          return;
-        }
-        pressedAt = Date.now();
-        latched = false;
-        this.start();
-      });
-
-      const release = () => {
-        if (this.state !== "recording" || latched) return;
-        if (Date.now() - pressedAt < HOLD_THRESHOLD_MS) latched = true; // a tap
-        else this.stop(); // a hold
-      };
-      button.addEventListener("pointerup", release);
-      button.addEventListener("pointercancel", release);
+      // A button steals focus from the composer on mousedown. Refusing that
+      // default keeps the caret where it was, and on a phone keeps the
+      // on-screen keyboard from collapsing under the composer.
+      button.addEventListener("mousedown", (event) => event.preventDefault());
 
       anchor.parentElement.insertBefore(button, anchor);
       this.button = button;

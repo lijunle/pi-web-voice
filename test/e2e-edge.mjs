@@ -156,6 +156,31 @@ try {
     `composer=${composerClass}`,
   );
 
+  // The keyboard, VoiceOver and the macOS accessibility API all activate a
+  // button through `click` and never emit pointer events. Binding pointer
+  // events alone left the button dead for every one of them.
+  await evaluate(`(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = ctx.createOscillator();
+      const destination = ctx.createMediaStreamDestination();
+      oscillator.frequency.value = 440;
+      oscillator.connect(destination);
+      oscillator.start();
+      return destination.stream;
+    };
+    document.getElementById("pi-web-voice-button").click();
+    return true;
+  })()`);
+  await sleep(1200);
+  const afterClick = await evaluate(`window.__piWebVoice.ui.state`);
+  check("click() starts recording", afterClick === "recording", `state=${afterClick}`);
+
+  await evaluate(`document.getElementById("pi-web-voice-button").click()`);
+  await sleep(2500);
+  const afterSecondClick = await evaluate(`window.__piWebVoice.ui.state`);
+  check("click() again stops it", afterSecondClick === "idle", `state=${afterSecondClick}`);
+
   // Headless browsers have no audio input device, so feed the recorder a
   // synthetic stream instead. Everything after capture is the real code path:
   // downsampling, WAV encoding, upload, response handling, DOM insertion.
