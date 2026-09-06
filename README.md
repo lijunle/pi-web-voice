@@ -127,8 +127,16 @@ The wait is real, so it is measured rather than guessed. Every transcription log
 [pi-web-voice] 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
 ```
 
-The audio context is kept for the life of the page and only suspended between takes, so
-that number is largest on the first recording after a page load and smaller afterwards.
+Two things keep that number down. The audio context is kept for the life of the page and
+only suspended between takes, so the OS opens an audio session once rather than once per
+recording — the first take after a page load is the slow one. And the microphone is asked
+for at finger-down rather than at the click, so a tap spends its own press time opening
+it; the click still decides whether anything is recorded, which is why the keyboard and
+VoiceOver keep working, at the cost of paying the whole wait.
+
+Asking at finger-down means the recording indicator lights on the press rather than on
+the decision. A finger that slides off the button therefore opens a microphone nobody
+claims — it is dropped a second and a half later, having recorded nothing.
 
 ## Backends
 

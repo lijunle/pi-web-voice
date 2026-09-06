@@ -225,6 +225,43 @@ try {
   );
   check("orphan stream closed", settled === "idle,false,false", settled);
 
+  // Finger-down opens the microphone so the press only has to claim it. This
+  // is a head start, not a second gesture: the click still decides.
+  const claimed = await evaluate(`(() => {
+    const button = document.getElementById("pi-web-voice-button");
+    button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const warmed = String(!!window.__piWebVoice.recorder.warming);
+    button.click();
+    return [warmed, String(window.__piWebVoice.recorder.warming)].join(",");
+  })()`);
+  check("finger-down warms, the press claims", claimed === "true,null", claimed);
+
+  await sleep(1800);
+  const recordingWarm = await evaluate(`window.__piWebVoice.recorder.active`);
+  check("the warmed stream is the one recorded", recordingWarm === true, `active=${recordingWarm}`);
+
+  await evaluate(`window.__piWebVoice.ui.stop()`);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if ((await evaluate(`window.__piWebVoice.ui.state`)) === "idle") break;
+    await sleep(250);
+  }
+
+  // A finger that slides off the button never presses it. What it opened must
+  // not be left listening.
+  await evaluate(`(() => {
+    document.getElementById("pi-web-voice-button")
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    window.__unclaimed = window.__piWebVoice.recorder.warming;
+    return true;
+  })()`);
+  await sleep(3200); // the stubbed getUserMedia takes 1.2s, the warm stream lives 1.5s
+  const dropped = await evaluate(`(async () => {
+    const stream = await window.__unclaimed;
+    const live = stream.getTracks().filter((track) => track.readyState === "live").length;
+    return [String(window.__piWebVoice.recorder.warming), live].join(",");
+  })()`);
+  check("unclaimed microphone dropped", dropped === "null,0", dropped);
+
   // Headless browsers have no audio input device, so feed the recorder a
   // synthetic stream instead. Everything after capture is the real code path:
   // downsampling, WAV encoding, upload, response handling, DOM insertion.

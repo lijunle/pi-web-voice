@@ -18,6 +18,10 @@
   );
 
   const MAX_SECONDS = 180;
+  // How long a microphone opened at finger-down stays open unclaimed. A press
+  // claims it milliseconds later; anything longer was a finger that slid off
+  // the button, or a hold long enough that it can pay for its own stream.
+  const WARM_MS = 1500;
   const SHORTCUT = "mod+shift+v";
 
   const SAMPLE_RATE = 16000;
@@ -165,18 +169,51 @@
     node: null,
     chunks: [],
     startedAt: 0,
+    // A microphone opened at finger-down, waiting for the press to claim it.
+    warming: null,
 
-    async start() {
+    /** Opens the microphone and the audio session, recording nothing yet. */
+    async open() {
       if (!window.isSecureContext) throw new Error(T.insecure);
       if (!navigator.mediaDevices?.getUserMedia) throw new Error(T.insecure);
 
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       if (!this.context) {
         this.context = new (window.AudioContext || window.webkitAudioContext)();
       }
       if (this.context.state === "suspended") await this.context.resume();
+      return stream;
+    },
+
+    /**
+     * Asks for the microphone at finger-down, so the press only has to claim
+     * it. `click` still decides whether anything is recorded, which is what
+     * keeps the keyboard, VoiceOver and the accessibility API working — they
+     * simply pay the whole wait.
+     *
+     * The recording indicator therefore lights on the press rather than on the
+     * decision, and a finger that slides off the button never claims what it
+     * opened. An unclaimed stream is dropped rather than left listening.
+     */
+    warm() {
+      if (this.active || this.warming) return;
+      const opening = this.open().catch(() => null); // start() reports the failure
+      this.warming = opening;
+      setTimeout(() => {
+        if (this.warming !== opening) return; // a press claimed it
+        this.warming = null;
+        opening.then((stream) => stream?.getTracks().forEach((track) => track.stop()));
+      }, WARM_MS);
+    },
+
+    async start() {
+      // Whatever finger-down opened, or a fresh one when the press came from a
+      // keyboard, a headphone squeeze, or a warm stream that timed out.
+      const warmed = this.warming;
+      this.warming = null;
+      this.stream = (warmed && (await warmed)) || (await this.open());
 
       const source = this.context.createMediaStreamSource(this.stream);
       // ScriptProcessor is deprecated but is the only node supported by every
@@ -310,6 +347,8 @@
     // already red during that window, so the state alone cannot say whether
     // there is a stream to stop.
     arming: false,
+    // When the finger went down, if it was a finger.
+    pressedAt: 0,
     // How long the last press waited for the microphone, in milliseconds.
     waitedMs: 0,
 
@@ -361,6 +400,15 @@
       // VoiceOver and the accessibility API able to press it at all — none of
       // them produce pointer events.
       button.addEventListener("click", () => this.toggle());
+
+      // Finger-down only opens the microphone; the click above still decides
+      // what to do with it. The default is deliberately left alone here, since
+      // preventing it would take the click with it.
+      button.addEventListener("pointerdown", () => {
+        if (this.state !== "idle") return;
+        this.pressedAt = Date.now();
+        recorder.warm();
+      });
 
       // A button steals focus from the composer on mousedown. Refusing that
       // default keeps the caret where it was, and on a phone keeps the
@@ -434,7 +482,10 @@
     // first sample: no word said after the digits appear can be lost.
     async start() {
       if (this.state !== "idle" || this.arming) return;
-      const pressedAt = Date.now();
+      // Timed from finger-down when there was one: that is when the microphone
+      // was asked for, and when the user started waiting. A stale press with no
+      // click behind it is ignored.
+      const pressedAt = Date.now() - this.pressedAt < WARM_MS ? this.pressedAt : Date.now();
       this.state = "recording";
       this.arming = true;
       this.render("…");
