@@ -2,11 +2,12 @@
 
 Voice input for [pi-web](https://github.com/agegr/pi-web), added from the outside.
 
-A microphone button appears in the chat composer. Click it to start, click again to stop.
-The transcript lands at your caret; you review it, then send. Keyboard, VoiceOver and the
-accessibility API can press it too. pi-web is never modified: the
-whole thing is one `--require` hook that injects a single `<script>` tag into HTML
-responses and serves two routes of its own.
+A microphone button appears in the chat composer. Click it to start, click again to stop;
+the clock that appears is the cue that the microphone is open. The transcript lands at
+your caret; you review it, then send. Keyboard, VoiceOver and the accessibility API can
+press it too. pi-web is never modified: the whole thing is one `--require` hook that
+injects a single `<script>` tag into HTML responses and answers its own requests under
+`/__voice/`.
 
 ```
 you speak ──▶ browser records 16 kHz WAV ──▶ POST /__voice/transcribe
@@ -313,7 +314,8 @@ mid-sentence code switching only work when it is left off.
 ## How it works
 
 1. `hook.cjs` patches `http.Server.prototype.emit` in the pi-web process.
-2. Requests under `/__voice/` are answered by the hook — `inject.js` and `transcribe`.
+2. Requests under `/__voice/` are answered by the hook — `inject.js`, `transcribe`, and
+   the `health` and `terms` diagnostics.
 3. Every other request is forwarded untouched, except that `text/html` responses gain
    one `<script>` tag. JSON, static assets, file uploads, and the SSE event stream are
    passed through unbuffered and byte-for-byte.
@@ -337,11 +339,14 @@ Keeping the credentials out of it means only the transcription request sees them
 
 ## Compatibility
 
-Verified against pi-web `0.8.11` (pi `0.84.3`). The only version-sensitive part is the
+Verified against pi-web `0.9.0` (pi `0.85.1`). The only version-sensitive part is the
 button anchor in `inject.js`, which looks for the image-attach button by title and falls
-back to the model selector, then to the send button's row. If a future pi-web moves
-things, that one function is what needs adjusting — the hook itself only depends on
-Node's HTTP API.
+back to the toolbar's model selector. If a future pi-web moves things, that one function
+is what needs adjusting — the hook itself only depends on Node's HTTP API.
+
+The button is a plain `<button>` driven by `click`, so anything that can activate a
+button can start a recording: a tap, a mouse, the keyboard, VoiceOver, the macOS
+accessibility API, `Cmd/Ctrl+Shift+V`, or a squeeze on a pair of AirPods.
 
 ## Tests
 
@@ -350,10 +355,18 @@ npm test                                        # HTTP interception, no pi-web n
 node test/e2e-edge.mjs http://127.0.0.1:31141   # real pi-web + real browser
 ```
 
-The end-to-end test drives headless Edge over the DevTools protocol: it waits for the
-button to mount, feeds the recorder a synthetic audio stream (headless browsers have no
-microphone), and asserts that the transcript reaches the composer. Set `BROWSER` to use
-a different Chromium binary.
+The end-to-end test drives headless Edge over the DevTools protocol against a real
+pi-web: it waits for the button to mount, proves the terminal's hidden textarea is not
+mistaken for the composer, feeds the recorder a synthetic audio stream (headless
+browsers have no microphone), and asserts that the transcript reaches the composer.
+
+The timing of the press is covered there too, because it is not something you can eyeball
+reliably. With `getUserMedia` stubbed to take 1.2 seconds, it asserts that the button is
+red in the same task as the click, that the clock only starts once audio exists, that a
+second press during the wait cancels without leaving the microphone open, that
+`pointerdown` opens the microphone for the click to claim, and that a warm stream nobody
+claims is stopped rather than left listening. Set `BROWSER` to use a different Chromium
+binary.
 
 ## Uninstall
 
