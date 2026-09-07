@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { install } = require("../lib/patch.cjs");
+const { loadConfig } = require("../lib/config.cjs");
 
 const PREFIX = "/__voice";
 const TAG = `<script src="${PREFIX}/inject.js" defer></script>`;
@@ -76,6 +77,13 @@ before(async () => {
 });
 
 after(() => server?.close());
+
+test("a ten-minute PCM recording fits within the upload and timeout limits", () => {
+  const { limits } = loadConfig();
+  const tenMinuteWavBytes = 44 + 10 * 60 * 16000 * 2;
+  assert.ok(tenMinuteWavBytes < limits.maxBytes);
+  assert.equal(limits.timeoutMs, 10 * 60_000);
+});
 
 test("serves its own routes without reaching the app", async () => {
   const response = await fetch(`${origin}${PREFIX}/anything`);

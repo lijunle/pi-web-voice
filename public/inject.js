@@ -17,7 +17,10 @@
     window.__PI_WEB_VOICE__ || {},
   );
 
-  const MAX_SECONDS = 180;
+  // Ten minutes stays below the 25 MB limit of file-based Azure OpenAI
+  // transcription at 16 kHz mono PCM (about 19.2 MB), while still putting a
+  // finite bound on an accidentally abandoned recording.
+  const MAX_SECONDS = 10 * 60;
   // How long a microphone opened at finger-down stays open unclaimed. A press
   // claims it milliseconds later; anything longer was a finger that slid off
   // the button, or a hold long enough that it can pay for its own stream.

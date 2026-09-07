@@ -139,6 +139,11 @@ Asking at finger-down means the recording indicator lights on the press rather t
 the decision. A finger that slides off the button therefore opens a microphone nobody
 claims — it is dropped a second and a half later, having recorded nothing.
 
+A take can run for up to **10 minutes**. At `10:00` it stops and starts transcribing just
+as if the button had been clicked; there is no separate warning or confirmation. The
+resulting 16 kHz mono PCM WAV is about 19.2 MB, below the 25 MB Azure OpenAI upload limit.
+The server allows the backend up to another 10 minutes to finish a long transcription.
+
 ## Backends
 
 Set `PI_VOICE_PROVIDER`, or let it be inferred from whichever credentials exist.
@@ -366,10 +371,11 @@ red in the same task as the click, that the clock only starts once audio exists,
 second press during the wait cancels without leaving the microphone open, that
 `pointerdown` opens the microphone for the click to claim, and that a warm stream nobody
 claims is stopped rather than left listening. It also holds a real mouse press across a
-clock tick and verifies that one click still stops recording. The icon and clock nodes
-stay mounted while their properties and text are updated, so a timer tick cannot replace
-the element between `mousedown` and `mouseup` and make Chromium suppress the click. Set
-`BROWSER` to use a different Chromium binary.
+clock tick and verifies that one click still stops recording, and advances the recording
+clock across the 10-minute boundary to verify automatic stopping. The icon and clock
+nodes stay mounted while their properties and text are updated, so a timer tick cannot
+replace the element between `mousedown` and `mouseup` and make Chromium suppress the
+click. Set `BROWSER` to use a different Chromium binary.
 
 ## Uninstall
 

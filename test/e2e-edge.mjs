@@ -356,6 +356,26 @@ try {
     spoke ? `inserted: ${composed.slice(0, 60)}` : `reported: ${notice.slice(0, 60)}`,
   );
 
+  // Exercise the ten-minute boundary without waiting ten minutes: startedAt
+  // only drives elapsed-time accounting, while the synthetic microphone keeps
+  // producing real audio callbacks that run the automatic-stop check.
+  await evaluate(`window.__piWebVoice.ui.start()`);
+  await sleep(1500);
+  await evaluate(`window.__piWebVoice.recorder.startedAt = Date.now() - 590000`);
+  await sleep(500);
+  const beforeLimit = await evaluate(`window.__piWebVoice.ui.state`);
+  check("recording continues before ten minutes", beforeLimit === "recording", `state=${beforeLimit}`);
+
+  await evaluate(`window.__piWebVoice.recorder.startedAt = Date.now() - 601000`);
+  await sleep(500);
+  const afterLimit = await evaluate(`window.__piWebVoice.ui.state`);
+  check("recording stops after ten minutes", afterLimit !== "recording", `state=${afterLimit}`);
+  if (afterLimit === "recording") await evaluate(`window.__piWebVoice.ui.stop()`);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if ((await evaluate(`window.__piWebVoice.ui.state`)) === "idle") break;
+    await sleep(250);
+  }
+
   cdp.close();
 } finally {
   child.kill();
