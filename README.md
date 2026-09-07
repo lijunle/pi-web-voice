@@ -141,6 +141,27 @@ as if the button had been clicked; there is no separate warning or confirmation.
 resulting 16 kHz mono PCM WAV is about 19.2 MB, below the 25 MB Azure OpenAI upload limit.
 The server allows the backend up to another 10 minutes to finish a long transcription.
 
+### Retry a failed transcription
+
+If uploading or transcribing fails, the original red error notice keeps the full error
+message with an underlined **Retry** text action beside it — no separate border or background.
+It retains button semantics, keyboard focus and a 44 × 44 px minimum touch target. The notice
+stays until the recording is handled, rather than disappearing after four seconds. Retry
+resubmits the same WAV without opening the microphone or asking you to speak again. While
+retrying, the error remains visible and the action is disabled with a "Transcribing…" label.
+
+Repeated failures update that same notice and keep the recording available; success clears
+the recording and removes the notice. Requests are never retried automatically, and repeated
+clicks cannot send parallel attempts. Successful empty responses still show "No speech detected"
+without a retry, and ordinary notices still disappear after four seconds.
+
+Only the pending take is kept, in this page's memory — not on disk. Refreshing, closing,
+or the browser discarding/reloading the page loses it; retry before doing any of those.
+Starting a new recording asks before replacing a pending one; a denied microphone or a
+cancelled opening leaves the old take available. If you switch conversations,
+return to the original one to retry. A transcript with no available composer is retained too,
+so retrying once the composer returns inserts the cached text without another service call.
+
 ## Backends
 
 Set `PI_VOICE_PROVIDER`, or let it be inferred from whichever credentials exist.
@@ -270,9 +291,24 @@ Example completion logs (`<uuid>` stands for the response's request ID):
   from the browser's 16 kHz mono PCM bytes. Term/character counts and language hints help
   explain results; microphone-opening time is included when available.
 
-Request logs contain metadata only: no audio, transcript, vocabulary list, API key, or raw
-upstream error body. Detailed errors still reach the requesting browser. VAD-only empty
-results can still incur provider usage; an empty transcript is not a billing exemption.
+### Reading logs when retrying
+
+- Each manual retry that uploads audio is a **new POST**, with its own request ID, elapsed
+  time and completion/error entry. Match each attempt's `x-pi-voice-request-id` in the browser
+  Network panel to the corresponding log. Uploading again may incur another provider charge.
+- The logs do not contain a shared recording ID or an audio fingerprint. Equal audio durations
+  alone do not prove two entries came from the same recording.
+- A browser-side failure is not necessarily a server-side error: an upload may fail before
+  reaching the server, or the response may be lost after the server logged `result=transcribed`.
+  That result means the provider returned text, **not** that the browser inserted it successfully.
+- If the transcript was already received but the composer was missing or the conversation
+  changed, retry inserts the cached text. There is **no new POST, provider call or request log**
+  for that local recovery.
+
+Request logs contain metadata only: no audio, transcript, vocabulary list, session ID,
+working directory, API key, or raw upstream error body. Detailed errors still reach the
+requesting browser. VAD-only empty results can still incur provider usage; an empty transcript
+is not a billing exemption.
 
 ## Vocabulary comes from your conversation
 
@@ -418,22 +454,49 @@ accessibility API, `Cmd/Ctrl+Shift+V`, or a squeeze on a pair of AirPods.
 ## Tests
 
 ```bash
-npm test                                     # offline HTTP, provider, logging and composer tests
-node test/e2e-edge.mjs http://127.0.0.1:31141   # real pi-web + real browser
+npm test                                          # offline unit/HTTP/logging tests
+npm run test:retry                                # isolated browser retry regression
+npm run test:e2e -- http://127.0.0.1:31141          # real pi-web integration
 ```
 
-`npm test` runs only `*.test.mjs` files with `NODE_OPTIONS` cleared. Provider requests are
-mocked: VAD encoding, empty/nonempty responses, vocabulary-free requests and keyword
-fallback are covered. Local HTTP route tests check request IDs, VAD/outcome logging,
-error statuses and that private content stays out of logs. A minimal DOM/VM harness checks
-that empty responses preserve the draft, caret and focus, while normal transcripts still
-insert into the composer rather than the terminal. No microphone, credentials, browser,
-or live speech-service calls are needed.
+All three commands clear `NODE_OPTIONS` in their child runner so a globally installed hook
+cannot intercept the test runner or its local fixtures. Browser suites are opt-in; they require
+Node 22+ and Microsoft Edge, or `BROWSER=/path/to/chromium` to select another Chromium binary.
 
-The end-to-end test drives headless Edge over the DevTools protocol against a real
-pi-web: it waits for the button to mount, proves the terminal's hidden textarea is not
-mistaken for the composer, feeds the recorder a synthetic audio stream (headless
-browsers have no microphone), and asserts that the transcript reaches the composer.
+`npm test` runs only `*.test.mjs` files. Provider requests are mocked: VAD encoding,
+empty/nonempty responses, vocabulary-free requests and keyword
+fallback are covered. Local HTTP route tests check request IDs, VAD/outcome logging,
+error statuses and that private content stays out of logs, including two failed uploads
+followed by a successful retry of the same audio. A minimal DOM/VM harness checks
+that empty responses preserve the draft, caret and focus, while normal transcripts still
+insert into the composer rather than the terminal. Retry tests cover network/HTTP/JSON failures,
+retaining and resubmitting the same WAV, double clicks, persistent red error details with an
+inline retry, notice timers, composer re-mounting and localization, conversation switches,
+missing composers and safely replacing a pending recording.
+No microphone, credentials, browser, or live speech-service calls are needed.
+
+`npm run test:retry` starts a loopback HTTP fixture and an isolated headless browser with
+an ephemeral debug port and temporary profile. It does not require pi-web, microphone access,
+credentials, or a live speech service. The fixture holds each response until the test releases
+it, making pending/disabled states deterministic. It checks:
+
+- English desktop and Chinese 320 px mobile layouts: original red error details, white
+  underlined Retry text, no separate border/background and a 44 × 44 px minimum touch target.
+- Persistent errors, repeated failures without stacked notices, long errors that wrap/scroll,
+  and provider text rendered as text rather than executable HTML.
+- Mouse and keyboard retries, duplicate-click suppression and survival of composer re-mounting.
+- Byte-identical WAV uploads across attempts, insertion exactly once, no microphone reopened,
+  and no writes to the terminal helper textarea.
+- Cleanup after success and the documented loss of page-only audio after a refresh.
+
+The final underlined Retry presentation was also manually accepted in the deployed service;
+that check complements, rather than replaces, the automated regression tests.
+
+`npm run test:e2e` drives headless Edge over the DevTools protocol against a real pi-web:
+it waits for the button to mount, proves the terminal's hidden textarea is not mistaken for
+the composer, feeds the recorder a synthetic audio stream, and checks the round trip.
+Use a separate test instance with `PI_VOICE_PROVIDER=mock` to avoid live transcription calls;
+otherwise this suite uses the target instance's configured provider.
 
 The timing of the press is covered there too, because it is not something you can eyeball
 reliably. With `getUserMedia` stubbed to take 1.2 seconds, it asserts that the button is
@@ -446,6 +509,10 @@ clock across the 10-minute boundary to verify automatic stopping. The icon and c
 nodes stay mounted while their properties and text are updated, so a timer tick cannot
 replace the element between `mousedown` and `mouseup` and make Chromium suppress the
 click. Set `BROWSER` to use a different Chromium binary.
+
+## Change history
+
+See [CHANGELOG.md](CHANGELOG.md) for unreleased changes and their verification scope.
 
 ## Uninstall
 

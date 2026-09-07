@@ -30,10 +30,13 @@ async function harness(t, { settings = config(), body = { text: "" }, status = 2
   const requests = [];
   t.mock.method(console, "log", (...args) => logs.push(args.join(" ")));
   t.mock.method(console, "error", (...args) => errors.push(args.join(" ")));
-  t.mock.method(globalThis, "fetch", async (_url, init) => {
-    requests.push(init.body);
+  let respond = () => {
     if (error) throw error;
     return new Response(JSON.stringify(body), { status });
+  };
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    requests.push(init.body);
+    return respond();
   });
   const server = http.createServer(createRouter(settings));
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -69,7 +72,7 @@ async function harness(t, { settings = config(), body = { text: "" }, status = 2
       req.end(bytes);
     });
   }
-  return { post, logs, errors, requests };
+  return { post, logs, errors, requests, setResponse(fn) { respond = fn; } };
 }
 
 function requestId(response) {
@@ -129,6 +132,37 @@ test("an upstream error logs its status but not its private response body", asyn
   assert.match(h.errors[0], /upstream_status=429$/);
   assert.doesNotMatch(h.errors.join("\n"), /PRIVATE_|speech\.example/);
   assert.deepEqual(h.logs, []);
+});
+
+test("manual retries of the same audio log each outcome separately without exposing content", async (t) => {
+  const h = await harness(t);
+  let attempts = 0;
+  h.setResponse(() => {
+    const failed = ++attempts < 3;
+    return new Response(JSON.stringify(failed ? { error: privateText } : { text: privateText }), {
+      status: failed ? 503 : 200,
+    });
+  });
+  const bytes = Buffer.concat([audio, Buffer.from("PRIVATE_AUDIO_do_not_log")]);
+  const query = "?session=PRIVATE_SESSION&cwd=%2FPRIVATE_PROJECT&wait=340";
+  const responses = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) responses.push(await h.post(bytes, query));
+
+  assert.deepEqual(responses.map(response => response.status), [502, 502, 200]);
+  assert.equal(new Set(responses.map(requestId)).size, 3, "a retry is a new HTTP request");
+  assert.equal(h.errors.length, 2);
+  assert.equal(h.logs.length, 1);
+  const records = [...h.errors, ...h.logs];
+  for (const [index, response] of responses.entries()) {
+    assert.ok(records[index].includes(`request=${requestId(response)}`));
+    assert.deepEqual(Buffer.from(await h.requests[index].get("file").arrayBuffer()), bytes);
+  }
+  assert.match(h.errors[0], /result=error.*upstream_status=503$/);
+  assert.match(h.errors[1], /result=error.*upstream_status=503$/);
+  assert.match(h.logs[0], /result=transcribed/);
+  assert.doesNotMatch(records.join("\n"), /PRIVATE_|speech\.example/);
+  assert.ok(responses[0].body.error.includes(privateText), "error details still reach the browser");
+  assert.equal(responses[2].body.text, privateText, "successful text still reaches the browser");
 });
 
 test("transport failures do not log an error message that could contain a URL or key", async (t) => {

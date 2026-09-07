@@ -32,6 +32,7 @@
     "bin",
     "public",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
@@ -39,6 +40,7 @@
   },
   "scripts": {
     "test": "node test/run.mjs",
-    "test:e2e": "node test/e2e-edge.mjs"
+    "test:retry": "node test/run.mjs e2e-retry.mjs",
+    "test:e2e": "node test/run.mjs e2e-edge.mjs"
   }
 }

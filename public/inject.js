@@ -29,6 +29,7 @@
 
   const SAMPLE_RATE = 16000;
   const BUTTON_ID = "pi-web-voice-button";
+  const RETRY_BUTTON_ID = "pi-web-voice-retry";
 
   // ── which conversation is this tab on ────────────────────────────────────
   //
@@ -101,6 +102,10 @@
         denied: "麦克风权限被拒绝",
         empty: "没有识别到语音",
         failed: "转写失败",
+        retry: "重试",
+        retryTitle: "重试转写 — 使用刚才的录音，无需重新说话",
+        replaceRecording: "上一段录音还未处理成功。放弃它并开始新的录音？",
+        changedSession: "请回到录音时的会话，再点击重试",
         noComposer: "找不到输入框，转写结果",
       }
     : {
@@ -112,6 +117,10 @@
         denied: "Microphone permission denied",
         empty: "No speech detected",
         failed: "Transcription failed",
+        retry: "Retry",
+        retryTitle: "Retry transcription — reuse the previous recording",
+        replaceRecording: "The previous recording is still pending. Discard it and start a new recording?",
+        changedSession: "Return to the conversation where you recorded, then retry",
         noComposer: "No composer found; transcript",
       };
 
@@ -338,13 +347,30 @@
 .pi-voice-pulse { animation: pi-voice-pulse 1.2s ease-in-out infinite; }
 #${BUTTON_ID}:hover { background: var(--bg-hover); color: var(--text); }
 #${BUTTON_ID}:active { transform: scale(.94); }
+#${RETRY_BUTTON_ID} {
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:44px; min-height:44px; padding:8px; box-sizing:border-box;
+  appearance:none; border:0; background:transparent; box-shadow:none; color:inherit;
+  font:inherit; font-weight:600; line-height:1.2; flex-shrink:0;
+  text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1px;
+  cursor:pointer; touch-action:manipulation;
+}
+#${RETRY_BUTTON_ID}:hover:not(:disabled) { text-decoration-thickness:2px; }
+#${RETRY_BUTTON_ID}:focus-visible { outline:2px solid #fff; outline-offset:2px; }
+#${RETRY_BUTTON_ID}:disabled { cursor:wait; opacity:.65; text-decoration:none; }
 `;
     document.head.appendChild(style);
   }
 
   const ui = {
     button: null,
+    retryButton: null,
+    toastElement: null,
+    toastTimer: null,
     state: "idle", // idle | recording | working
+    // Keep the WAV and request context independently of any one attempt. This
+    // is page memory only: retries neither reopen the mic nor write to disk.
+    pending: null,
     timer: null,
     // True from the press until the microphone actually opens. The button is
     // already red during that window, so the state alone cannot say whether
@@ -414,7 +440,8 @@
       // what to do with it. The default is deliberately left alone here, since
       // preventing it would take the click with it.
       button.addEventListener("pointerdown", () => {
-        if (this.state !== "idle") return;
+        // A pending take needs confirmation before opening another microphone.
+        if (this.state !== "idle" || this.pending) return;
         this.pressedAt = Date.now();
         recorder.warm();
       });
@@ -430,6 +457,7 @@
     },
 
     render(extra = "") {
+      this.renderToast();
       if (!this.button) return;
 
       const spinning = this.state === "working";
@@ -469,15 +497,42 @@
       label.style.display = extra ? "" : "none";
     },
 
-    toast(message, isError = true) {
+    clearToast() {
+      clearTimeout(this.toastTimer);
+      this.toastTimer = null;
+      this.toastElement?.remove();
+      this.toastElement = null;
+      this.retryButton = null;
+    },
+
+    renderToast() {
+      if (!this.retryButton) return;
+      if (!this.pending) return this.clearToast();
+      const working = this.state === "working";
+      this.retryButton.disabled = this.state !== "idle" || this.arming;
+      this.retryButton.textContent = working ? T.working : T.retry;
+      this.retryButton.setAttribute("aria-busy", working ? "true" : "false");
+    },
+
+    toast(message, isError = true, retryable = false) {
+      // One notice at a time. A failed retry updates the red notice instead of
+      // stacking another over it, and an older timer cannot dismiss it.
+      this.clearToast();
+      ensureStyles();
       const toast = document.createElement("div");
-      toast.textContent = message;
+      toast.setAttribute("role", isError ? "alert" : "status");
       toast.style.cssText = [
         "position:fixed",
         "left:50%",
         "bottom:80px",
         "transform:translateX(-50%)",
         "z-index:99999",
+        "display:flex",
+        "align-items:center",
+        "gap:12px",
+        "width:max-content",
+        "max-width:calc(100vw - 32px)",
+        "box-sizing:border-box",
         "padding:8px 14px",
         "border-radius:8px",
         "font-size:13px",
@@ -485,8 +540,28 @@
         `background:${isError ? "#b4342c" : "#2f6f4f"}`,
         "box-shadow:0 6px 24px rgba(0,0,0,.35)",
       ].join(";");
+      const content = document.createElement("span");
+      content.textContent = message;
+      // Long provider errors must wrap/scroll, not push Retry off a phone's
+      // screen. The action stays outside that scrollable text region.
+      content.style.cssText = "min-width:0;overflow-wrap:anywhere;max-height:40vh;overflow:auto";
+      toast.appendChild(content);
+      if (retryable && this.pending) {
+        const retry = document.createElement("button");
+        retry.id = RETRY_BUTTON_ID;
+        retry.type = "button";
+        retry.title = T.retryTitle;
+        retry.setAttribute("aria-label", T.retryTitle);
+        retry.addEventListener("click", () => this.retry());
+        retry.addEventListener("mousedown", (event) => event.preventDefault());
+        toast.appendChild(retry);
+        this.retryButton = retry;
+      } else {
+        this.toastTimer = setTimeout(() => this.clearToast(), 4000);
+      }
+      this.toastElement = toast;
       document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 4000);
+      this.renderToast();
     },
 
     // Paint first, ask the microphone second. getUserMedia and the audio
@@ -497,6 +572,7 @@
     // first sample: no word said after the digits appear can be lost.
     async start() {
       if (this.state !== "idle" || this.arming) return;
+      if (this.pending && !window.confirm(T.replaceRecording)) return;
       // Timed from finger-down when there was one: that is when the microphone
       // was asked for, and when the user started waiting. A stale press with no
       // click behind it is ignored.
@@ -510,12 +586,12 @@
       } catch (error) {
         if (this.state !== "recording") return; // already pressed again
         this.state = "idle";
-        this.render();
         const denied = error?.name === "NotAllowedError";
-        this.toast(denied ? T.denied : error.message || T.failed);
+        this.toast(denied ? T.denied : error.message || T.failed, true, !!this.pending);
         return;
       } finally {
         this.arming = false;
+        if (this.state === "idle") this.render();
       }
 
       // A second press during the wait already put the button back to idle, so
@@ -524,6 +600,10 @@
         recorder.stop();
         return;
       }
+
+      // Do not lose the previous take to a denied permission or a cancelled
+      // microphone opening, even after the user agreed to replace it.
+      this.pending = null;
 
       // Reported with the audio so the server log can show what the wait
       // actually costs on this device, rather than what it is assumed to cost.
@@ -551,47 +631,64 @@
       }
 
       const wav = recorder.stop();
-      this.state = "working";
-      this.render();
-
+      this.state = "idle";
       if (!wav) {
-        this.state = "idle";
         this.render();
         this.toast(T.empty);
         return;
       }
 
+      const query = new URLSearchParams();
+      if (sessionId) query.set("session", sessionId);
+      const where = currentCwd();
+      if (where) query.set("cwd", where);
+      if (this.waitedMs) query.set("wait", String(this.waitedMs));
+      const suffix = query.toString() ? `?${query}` : "";
+      this.pending = { wav, url: `${CONFIG.prefix}/transcribe${suffix}`, sessionId, cwd: where };
+      return this.retry();
+    },
+
+    async retry() {
+      if (this.state !== "idle" || this.arming || !this.pending) return;
+      const take = this.pending;
+      const sameSession = () => take.sessionId === sessionId && take.cwd === currentCwd();
+      this.state = "working";
+      this.render();
+
       try {
-        const query = new URLSearchParams();
-        if (sessionId) query.set("session", sessionId);
-        const where = currentCwd();
-        if (where) query.set("cwd", where);
-        if (this.waitedMs) query.set("wait", String(this.waitedMs));
-        const suffix = query.toString() ? `?${query}` : "";
+        if (!sameSession()) throw new Error(T.changedSession);
+        if (take.text === undefined) {
+          const response = await nativeFetch(take.url, {
+            method: "POST",
+            headers: { "content-type": "audio/wav" },
+            body: take.wav,
+            credentials: "include",
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || T.failed);
+          take.text = (result.text || "").trim();
+        }
 
-        const response = await nativeFetch(`${CONFIG.prefix}/transcribe${suffix}`, {
-          method: "POST",
-          headers: { "content-type": "audio/wav" },
-          body: wav,
-          credentials: "include",
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || T.failed);
-
-        const text = (result.text || "").trim();
-        if (!text) {
+        // A successful empty response (including service-side VAD) is not a
+        // failed request. Keep the existing no-speech behaviour.
+        if (!take.text) {
           this.toast(T.empty);
         } else {
-          // Always inserted, never sent: a wrong term is one keystroke from
-          // being fixed, and Enter is right there when it is correct.
+          // The user may have changed conversations while the request ran.
+          // Keep the text as well as the WAV so returning and retrying inserts
+          // it without paying for another transcription.
+          if (!sameSession()) throw new Error(T.changedSession);
           const textarea = findComposer();
-          // Never fail silently: a transcript with nowhere to go is shown
-          // rather than dropped, so it can still be copied by hand.
-          if (textarea) insertAtCaret(textarea, text);
-          else this.toast(`${T.noComposer}: ${text}`);
+          if (!textarea) {
+            this.toast(`${T.noComposer}: ${take.text}`, true, true);
+            return;
+          }
+          // Always inserted, never sent.
+          insertAtCaret(textarea, take.text);
         }
+        this.pending = null;
       } catch (error) {
-        this.toast(`${T.failed}: ${error.message}`);
+        this.toast(`${T.failed}: ${error.message}`, true, true);
       } finally {
         this.state = "idle";
         this.render();

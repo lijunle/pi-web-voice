@@ -17,14 +17,22 @@ const here = dirname(fileURLToPath(import.meta.url));
 const env = { ...process.env };
 delete env.NODE_OPTIONS;
 
-// Only unit-test files: never pick up the opt-in browser/live-service suite.
+// Browser suites remain opt-in and get the same clean environment. Otherwise
+// a preloaded installed hook could inject a second script into the local fixture.
+const suite = process.argv[2];
+if (suite && !["e2e-edge.mjs", "e2e-retry.mjs"].includes(suite)) {
+  console.error(`Unknown browser suite: ${suite}`);
+  process.exit(1);
+}
 const tests = readdirSync(here)
   .filter((file) => file.endsWith(".test.mjs"))
   .sort()
   .map((file) => join(here, file));
-const child = spawn(process.execPath, ["--test", ...tests], {
+const args = suite ? [join(here, suite), ...process.argv.slice(3)] : ["--test", ...tests];
+const child = spawn(process.execPath, args, {
   env,
   stdio: "inherit",
 });
 
+child.on("error", error => { console.error(error.message); process.exit(1); });
 child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
