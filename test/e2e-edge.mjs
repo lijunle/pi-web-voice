@@ -240,7 +240,51 @@ try {
   const recordingWarm = await evaluate(`window.__piWebVoice.recorder.active`);
   check("the warmed stream is the one recorded", recordingWarm === true, `active=${recordingWarm}`);
 
-  await evaluate(`window.__piWebVoice.ui.stop()`);
+  // Use a real mouse sequence and hold it across at least one clock tick.
+  // Replacing the SVG/span on every tick used to detach the mousedown target,
+  // which makes Chromium suppress the ensuing click. Starting worked because
+  // there was no clock yet, while stopping often needed a second mouse click.
+  const clockPoint = await evaluate(`(() => {
+    const button = document.getElementById("pi-web-voice-button");
+    window.__mouseEvents = [];
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      button.addEventListener(type, (event) => {
+        window.__mouseEvents.push(type + ":" + event.target.tagName);
+      });
+    }
+    const rect = button.querySelector("span").getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: clockPoint.x,
+    y: clockPoint.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  await sleep(350);
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: clockPoint.x,
+    y: clockPoint.y,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  const mouseResult = await evaluate(`JSON.stringify({
+    state: window.__piWebVoice.ui.state,
+    events: window.__mouseEvents,
+  })`);
+  const { state: afterMouseClick, events: mouseEvents } = JSON.parse(mouseResult);
+  check(
+    "one mouse click stops across a clock tick",
+    afterMouseClick !== "recording",
+    `state=${afterMouseClick}; events=${mouseEvents.join(",")}`,
+  );
+
+  // Keep the rest of the suite independent when this regression fails.
+  if (afterMouseClick === "recording") await evaluate(`window.__piWebVoice.ui.stop()`);
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if ((await evaluate(`window.__piWebVoice.ui.state`)) === "idle") break;
     await sleep(250);

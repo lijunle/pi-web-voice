@@ -318,7 +318,7 @@
 
   // A filled glyph reads as an ordinary control; the outlined one looked
   // greyed out next to pi-web's own toolbar icons.
-  const MIC_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14.5a3.25 3.25 0 0 0 3.25-3.25v-6a3.25 3.25 0 0 0-6.5 0v6A3.25 3.25 0 0 0 12 14.5z"/><path d="M17.75 11a.85.85 0 0 0-1.7 0 4.05 4.05 0 0 1-8.1 0 .85.85 0 0 0-1.7 0 5.75 5.75 0 0 0 4.9 5.68v1.62h-1.9a.85.85 0 0 0 0 1.7h5.5a.85.85 0 0 0 0-1.7h-1.9v-1.62A5.75 5.75 0 0 0 17.75 11z"/></svg>`;
+  const MIC_SVG = `<svg class="pi-voice-mic" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14.5a3.25 3.25 0 0 0 3.25-3.25v-6a3.25 3.25 0 0 0-6.5 0v6A3.25 3.25 0 0 0 12 14.5z"/><path d="M17.75 11a.85.85 0 0 0-1.7 0 4.05 4.05 0 0 1-8.1 0 .85.85 0 0 0-1.7 0 5.75 5.75 0 0 0 4.9 5.68v1.62h-1.9a.85.85 0 0 0 0 1.7h5.5a.85.85 0 0 0 0-1.7h-1.9v-1.62A5.75 5.75 0 0 0 17.75 11z"/></svg>`;
 
   const SPINNER_SVG = `<svg class="pi-voice-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>`;
 
@@ -395,6 +395,12 @@
         "transition:color .15s,background .15s,transform .1s",
       ].join(";");
 
+      // Keep the hit-tested children alive for the button's whole lifetime.
+      // Replacing them on every clock tick can remove the element under a
+      // held mouse between mousedown and mouseup, in which case the browser
+      // suppresses the click and stopping appears to require a second press.
+      button.innerHTML = `${MIC_SVG}${SPINNER_SVG}<span> </span>`;
+
       // One button, one gesture: click to start, click again to stop. Going
       // through `click` rather than pointer events is what makes the keyboard,
       // VoiceOver and the accessibility API able to press it at all — none of
@@ -446,12 +452,18 @@
       this.button.setAttribute("aria-label", this.button.title);
       this.button.setAttribute("aria-busy", spinning ? "true" : "false");
 
-      const icon = spinning
-        ? SPINNER_SVG
-        : live
-          ? MIC_SVG.replace("<svg ", '<svg class="pi-voice-pulse" ')
-          : MIC_SVG;
-      this.button.innerHTML = extra ? `${icon}<span>${extra}</span>` : icon;
+      // Only change properties of the mounted children. In particular, the
+      // clock updates must not replace the span or SVG under a mouse press.
+      const mic = this.button.querySelector(".pi-voice-mic");
+      const spinner = this.button.querySelector(".pi-voice-spin");
+      const label = this.button.querySelector("span");
+      mic.classList.toggle("pi-voice-pulse", live);
+      mic.style.display = spinning ? "none" : "";
+      spinner.style.display = spinning ? "" : "none";
+      // Keep the Text node too: assigning textContent would replace it, and
+      // Chromium includes that internal text hit in its click-target check.
+      label.firstChild.nodeValue = extra;
+      label.style.display = extra ? "" : "none";
     },
 
     toast(message, isError = true) {

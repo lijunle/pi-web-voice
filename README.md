@@ -365,8 +365,11 @@ reliably. With `getUserMedia` stubbed to take 1.2 seconds, it asserts that the b
 red in the same task as the click, that the clock only starts once audio exists, that a
 second press during the wait cancels without leaving the microphone open, that
 `pointerdown` opens the microphone for the click to claim, and that a warm stream nobody
-claims is stopped rather than left listening. Set `BROWSER` to use a different Chromium
-binary.
+claims is stopped rather than left listening. It also holds a real mouse press across a
+clock tick and verifies that one click still stops recording. The icon and clock nodes
+stay mounted while their properties and text are updated, so a timer tick cannot replace
+the element between `mousedown` and `mouseup` and make Chromium suppress the click. Set
+`BROWSER` to use a different Chromium binary.
 
 ## Uninstall
 
