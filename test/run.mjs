@@ -9,6 +9,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -16,7 +17,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const env = { ...process.env };
 delete env.NODE_OPTIONS;
 
-const child = spawn(process.execPath, ["--test", join(here, "patch.test.mjs")], {
+// Only unit-test files: never pick up the opt-in browser/live-service suite.
+const tests = readdirSync(here)
+  .filter((file) => file.endsWith(".test.mjs"))
+  .sort()
+  .map((file) => join(here, file));
+const child = spawn(process.execPath, ["--test", ...tests], {
   env,
   stdio: "inherit",
 });

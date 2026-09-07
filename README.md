@@ -122,11 +122,8 @@ opening. The clock replacing it — `0:00`, with the icon pulsing — means the 
 is in. **Start talking when the digits appear**, and nothing can be lost, because the
 clock counts recorded audio rather than time since the press.
 
-The wait is real, so it is measured rather than guessed. Every transcription logs it:
-
-```
-[pi-web-voice] 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
-```
+The wait is real, so it is measured rather than guessed. Each [transcription log](#transcription-logs)
+includes `mic opened in 340ms` when the browser reports that measurement.
 
 Two things keep that number down. The audio context is kept for the life of the page and
 only suspended between takes, so the OS opens an audio session once rather than once per
@@ -179,16 +176,46 @@ which takes up to 500 entries, so the whole list fits.
 | --- | --- |
 | `AZURE_OPENAI_ENDPOINT` | — |
 | `AZURE_OPENAI_API_KEY` | — |
-| `PI_VOICE_DEPLOYMENT` | `gpt-4o-transcribe` |
+| `PI_VOICE_DEPLOYMENT` | `gpt-transcribe` |
 
 The request shape follows the deployment name:
 
-- **`gpt-transcribe`** uses the v1 surface and gets the vocabulary as structured
-  `keywords[]`, plus `languages[]` derived from the browser's `Accept-Language`. No token
-  budget to fight, and nothing a model could mistake for an instruction.
+- **`gpt-transcribe`** gets the vocabulary as structured `keywords[]`, plus `languages[]`
+  derived from the browser's `Accept-Language`. Deployment-style and v1 URLs are accepted.
+  Requests set `chunking_strategy=auto` to enable the service's automatic VAD chunking,
+  including when retrying with a prompt after keywords are rejected.
 - **`gpt-4o-transcribe`** and whisper use the classic deployment path with a `prompt`.
   Whisper reads only the last 224 tokens of it, so the list is trimmed to fit. Note that
   `gpt-4o-transcribe` version `2025-03-20` retires on 15 October 2026.
+
+#### Empty recordings and automatic VAD
+
+Without VAD, `gpt-transcribe` can generate text from silence, influenced by the supplied
+vocabulary. Explicitly requesting `chunking_strategy=auto` fixes the reproduced cases
+without a browser model, new dependencies, or a fixed duration/loudness cutoff.
+
+Live probes against the `2025-03-01-preview` deployment endpoint, with vocabulary enabled:
+
+| Input | Observed result with automatic VAD |
+| --- | --- |
+| 0.2-second and three-second synthetic silence | Empty text; ungated controls generated unrelated English |
+| Synthetic quiet noise and a click | Empty text |
+| Synthesized English and Chinese speech | Transcribed, not discarded; ordinary recognition errors remain possible |
+| Short words `Yes` and `好` | Recognized |
+| Three seconds of silence followed by Chinese speech | Subsequent speech transcribed |
+
+The deployed browser path was also checked with three-second silence and 60 terms, then
+verified by manual use. These are observed results, not a guarantee for every microphone,
+background voice or quiet utterance. Live probes are not part of `npm test`.
+
+The parameter is a scalar multipart field, `chunking_strategy=auto`. On the tested endpoint,
+invalid scalar values returned 400, while bracketed fields such as `chunking_strategy[type]`
+were ignored. Keyword-to-prompt retries keep VAD enabled; there is no silent fallback that
+removes it. An empty response leaves the draft and selection untouched and shows
+"No speech detected" instead of inserting text.
+
+This is service-side filtering, not local cancellation: audio still reaches Azure, and
+empty responses still report audio usage. No new VAD option is sent to other model branches.
 
 ### `openai` — OpenAI, Groq, or a local server
 
@@ -217,6 +244,35 @@ It prints the resolved settings with the key masked, the vocabulary it would sen
 either a transcript or a diagnosis — `401` wrong key, `404` wrong resource or region,
 `400` a model that region does not serve. An empty transcript from the generated tone is
 expected and still proves the credentials work.
+
+## Transcription logs
+
+Each transcription POST gets a UTC start timestamp and a unique request ID. The ID is also
+returned in the `x-pi-voice-request-id` response header, so a browser Network entry can be
+matched to its completion or failure log without storing the session ID or working directory.
+
+Example completion logs (`<uuid>` stands for the response's request ID):
+
+```text
+[pi-web-voice] 2026-09-07T20:32:00.000Z · request=<uuid> · provider=azure-openai · vad=auto · result=empty · 0.5s · 3.0s audio · 60 terms · 0 chars · en
+[pi-web-voice] 2026-09-07T20:33:00.000Z · request=<uuid> · provider=azure-openai · vad=auto · result=transcribed · 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
+```
+
+- **`vad=auto`** means the request explicitly enabled automatic VAD. **`vad=default`** means
+  no override was sent; it does not claim the provider has no VAD internally.
+- **`result=empty`** is a successful response with no text, not an error. It does **not**
+  prove VAD filtered the audio: the service does not report that decision separately.
+  **`result=transcribed`** means text was returned.
+- **`result=rejected · reason=empty-audio`** means a zero-byte upload was rejected locally.
+  **`result=error`** indicates a failed request, with `upstream_status=429`, for example,
+  or `upstream_status=n/a` when no HTTP status is available.
+- Elapsed time covers the request, not just model inference. Audio duration is estimated
+  from the browser's 16 kHz mono PCM bytes. Term/character counts and language hints help
+  explain results; microphone-opening time is included when available.
+
+Request logs contain metadata only: no audio, transcript, vocabulary list, API key, or raw
+upstream error body. Detailed errors still reach the requesting browser. VAD-only empty
+results can still incur provider usage; an empty transcript is not a billing exemption.
 
 ## Vocabulary comes from your conversation
 
@@ -328,14 +384,20 @@ mid-sentence code switching only work when it is left off.
    mono PCM WAV in the page, and writes the result into the composer through the
    `HTMLTextAreaElement` value setter so React sees the change.
 
-`inject.js` is read from disk on every request, so editing it takes effect on reload —
-no restart, and any agent session you have running stays alive.
+`inject.js` is read from the active hook installation on every request, so editing that
+copy takes effect on reload — no restart, and running agent sessions stay alive.
+
+Backend files under `lib/` are loaded into the pi-web process. After installing a backend
+change, restart pi-web; refreshing the page alone is not enough. Editing a checkout also
+does not update a separate global npm installation: check the service's `NODE_OPTIONS`
+path to confirm which copy it actually loads.
 
 ## Privacy
 
 Audio goes from your browser to your own pi-web origin, and from there to the speech
 backend you configured. The page is only told which provider is active, never the key.
-Nothing is written to disk and nothing else is contacted.
+Audio and transcripts are not written to disk. The service emits the metadata-only
+[request logs](#transcription-logs) described above; no additional service is contacted.
 
 `~/.pi/agent/voice.env` is parsed into a private object rather than merged into
 `process.env`. pi-web runs the agent's shell commands as children of its own process, so
@@ -356,9 +418,17 @@ accessibility API, `Cmd/Ctrl+Shift+V`, or a squeeze on a pair of AirPods.
 ## Tests
 
 ```bash
-npm test                                        # HTTP interception, no pi-web needed
+npm test                                     # offline HTTP, provider, logging and composer tests
 node test/e2e-edge.mjs http://127.0.0.1:31141   # real pi-web + real browser
 ```
+
+`npm test` runs only `*.test.mjs` files with `NODE_OPTIONS` cleared. Provider requests are
+mocked: VAD encoding, empty/nonempty responses, vocabulary-free requests and keyword
+fallback are covered. Local HTTP route tests check request IDs, VAD/outcome logging,
+error statuses and that private content stays out of logs. A minimal DOM/VM harness checks
+that empty responses preserve the draft, caret and focus, while normal transcripts still
+insert into the composer rather than the terminal. No microphone, credentials, browser,
+or live speech-service calls are needed.
 
 The end-to-end test drives headless Edge over the DevTools protocol against a real
 pi-web: it waits for the button to mount, proves the terminal's hidden textarea is not
