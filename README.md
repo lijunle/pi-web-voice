@@ -7,8 +7,8 @@ caret in the chat composer: review it, edit it, then send.
 
 ## Why pi-web-voice
 
-- **Drop-in integration.** Add a dependency-free hook to your existing pi-web
-  installation and run it directly from source, keeping pi-web's installed files intact.
+- **Drop-in integration.** Add a hook with zero runtime dependencies to your existing
+  pi-web installation and run it directly from source, keeping pi-web's installed files intact.
 - **Vocabulary from your conversation.** The hook extracts project names and technical
   terms from the active conversation and its project's recent sessions to help transcription.
 - **Your choice of backend.** Use Azure OpenAI with `gpt-transcribe`, Azure AI Speech,

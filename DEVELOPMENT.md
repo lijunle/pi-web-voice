@@ -40,12 +40,18 @@ hook.cjs → config.cjs + patch.cjs + routes.cjs
 `patch.cjs` wraps `http.Server.prototype.emit`, catching both `createServer(handler)`
 and `server.on("request")`. Voice routes run before application listeners; other
 requests reach the application with HTML responses wrapped for injection. The hook
-strips `accept-encoding` on that path to request an injectable identity response.
-JSON, SSE, and binary response bodies pass through directly. During streamed HTML
-writes, a buffer that exceeds `1024 * 1024` JavaScript string code units while awaiting
-an insertion point triggers an unmodified flush. The threshold check runs after each
-chunk, so buffer size can exceed the threshold; `end()` handles its content separately.
-Keep this text-scan threshold distinct from a byte-based memory limit.
+strips `accept-encoding` on that path and injects into identity-encoded UTF-8 HTML.
+Compressed responses, explicit alternative charsets, JSON, SSE, and binary bodies pass
+through directly. Object and raw-array response headers are supported; HTML injection
+removes content length from a copy, preserving caller-owned headers.
+
+A streaming decoder preserves UTF-8 boundaries before and after insertion, honoring
+byte views and the encoding argument for string chunks. A buffer that exceeds
+`1024 * 1024` JavaScript string code units while awaiting an insertion point triggers
+an unmodified flush. Decoding continues after this search limit to preserve split
+characters. The threshold check runs after each chunk; `end()` handles its content
+separately. Keep this text-scan threshold distinct from a byte-based memory limit.
+Native writer calls sit outside transformation recovery and propagate their errors once.
 
 Installation is idempotent because the launcher can preload the hook in a parent and
 child. Only a process that listens announces activation. Browser configuration contains
@@ -78,6 +84,7 @@ separately when diagnosing a running service.
 | Audio-context resume timeout | 3 seconds |
 | Candidate cap / project history | 400 ranked terms / up to five recent sibling sessions |
 | Session read limits | Current session tail: 256 KiB; each sibling: at most 128 KiB |
+| Project header scan limit | First JSONL line, up to 64 KiB |
 | Vocabulary cache / project index TTL | 20 seconds / 60 seconds |
 | Keyboard shortcut | `Cmd/Ctrl+Shift+V` |
 
@@ -152,10 +159,20 @@ an explicit empty transcript are separate outcomes:
   local errors. Render notices through text nodes to keep error details inert.
 
 The strict text-field contract applies at the browser-facing `/__voice/transcribe`
-boundary. OpenAI-style adapters normalize upstream text with `String(text ?? "").trim()`:
-a missing field becomes empty and a number becomes a string. Azure Speech joins
-`combinedPhrases`, treating an absent list as empty. Keep these normalization rules
-distinct from the browser-facing schema checks.
+boundary. Provider adapters first require a JSON object. OpenAI-style adapters then
+normalize its text with `String(text ?? "").trim()`: a missing field becomes empty and
+a number becomes a string. Azure Speech requires an array of phrase objects when
+`combinedPhrases` is present, treats an absent list as empty, and joins phrase text.
+Keep these container guards and normalization rules distinct from the browser-facing
+string-field contract.
+
+Exception guards cache string message values and contain failures in metadata access
+or string conversion. They use `Unknown error` when string conversion fails and preserve readable integer
+status metadata separately.
+
+The upload reader requires Buffer chunks and routes chunk-validation or assembly errors
+through its promise. Keep request streams in binary mode so the original WAV bytes reach
+the provider.
 
 At the server, `routes.cjs` converts caught transcription failures to HTTP 502 and logs
 upstream status separately from potentially private error bodies. Its JSON `error`
@@ -197,29 +214,61 @@ ten minutes. Keep fetch-to-headers timing distinct from end-to-end request durat
 
 ### Environment and active installation
 
-Node.js 20+ runs the application and unit suite directly from a checkout. Browser suites
-require **Node.js 22+** for global WebSocket and Microsoft Edge by default; set
-`BROWSER=/path/to/chromium` to use another Chromium binary.
+Node.js 20+ runs the application and unit suite directly from a checkout. Install the
+locked development tools before running the full check:
+
+```bash
+npm ci
+npm run check
+```
+
+TypeScript 6 and Node 20 type definitions are development dependencies; the application
+continues to execute its CommonJS source directly. Browser suites require **Node.js 22+**
+for global WebSocket and Microsoft Edge by default; set `BROWSER=/path/to/chromium`
+to use another Chromium binary.
 
 Identify the active installation through the service's `NODE_OPTIONS` and
 `pi-web-voice hook-path`. Update that copy to apply changes. Client changes need a page
 reload; backend or credential-file changes need a service restart. Handle pending audio
 before reloading. See [Upgrading and uninstalling](USAGE.md#upgrading-and-uninstalling).
 
+### Static type checking
+
+`npm run typecheck` runs TypeScript with `allowJs`, `checkJs`, `strict`, and `noEmit`.
+Its scope is `hook.cjs`, `bin/**/*.js`, and `lib/**/*.cjs`. It uses NodeNext module
+resolution and Node 20 types with the ES2022 library. Browser code and `.mjs` test
+sources receive runtime test coverage; this configuration checks the server side.
+
+Describe function inputs, returns, shared contracts, and nullable state with JSDoc.
+Reuse inferred configuration types through `ReturnType<typeof loadConfig>` and let
+local values infer their types. Keep external JSON and caught exceptions as `unknown`
+until guards narrow them. Runtime checks validate data shapes; static checks validate
+how the implementation uses those shapes.
+
+HTTP wrappers use a small typed reflection bridge to preserve Node's overloads,
+argument lists, receivers, and return values. Keep casts local to these known API
+boundaries. The compiler operates as a source analyzer; Node executes the original
+CommonJS files.
+
 ### Test commands and isolation
 
 ```bash
+npm run check          # server type checking followed by the unit suite
+npm run typecheck      # static checking only
 npm test
 npm run test:retry
 npm run test:e2e -- http://127.0.0.1:31141
 ```
 
-All three use `test/run.mjs`, which clears `NODE_OPTIONS` in the child suite so the tests
-exercise the checkout's own code. Browser suites are opt-in; `npm test` selects only
-`*.test.mjs`.
+The unit and browser test commands use `test/run.mjs`, which clears `NODE_OPTIONS` in
+the child suite so tests exercise the checkout's own code. `npm run check` combines
+server type checking with `npm test`. Browser suites are opt-in; `npm test` selects only
+`*.test.mjs` and remains independent of the TypeScript tools.
 
 | Command | Environment | Speech-service access |
 | --- | --- | --- |
+| `npm run check` | TypeScript plus the unit-test environment below | Static analysis, local fixtures, and mock responses |
+| `npm run typecheck` | Development dependencies and `tsconfig.json` | Static analysis only |
 | `npm test` | Node tests, local HTTP servers, DOM/VM harness, mocked fetch | Local fixtures and mock responses |
 | `npm run test:retry` | Own loopback fixture and isolated headless Chromium with generated audio | Local fixture only; synthetic audio supplies the input |
 | `npm run test:e2e -- <url>` | A separately running pi-web plus headless Chromium | Uses the target's configured backend; select mock for isolated testing |
@@ -236,12 +285,20 @@ an ephemeral debug port, while the integration script uses port 9333.
 
 ### Automated coverage
 
-- **HTTP interception:** streamed/fixed HTML injection, head/body fallbacks, content-length
-  handling, and JSON/binary/SSE pass-through behavior.
+- **Configuration and CLI:** direct CommonJS commands, private configuration initialization,
+  file caching, environment precedence, and file-based credential isolation in child fixtures.
+- **HTTP interception:** streamed/fixed HTML injection, split UTF-8, byte views, string
+  encodings, immutable object/raw headers, content-length handling, compressed/alternative
+  charset pass-through, callbacks, fluent return values, and single-call error propagation.
 - **Provider contracts:** scalar VAD encoding, empty/nonempty results, requests with empty
-  vocabulary, keyword fallback with VAD retained, and provider-specific request shapes.
-- **Routes and logs:** distinct request IDs and outcomes for repeated uploads, timing/status
-  fields, and a metadata-only log schema that keeps private request content separate.
+  vocabulary, keyword fallback with VAD retained, provider registry membership, JSON
+  container validation, and provider-specific request shapes.
+- **Boundary guards and vocabulary:** unknown exceptions, hostile getters/proxies,
+  integer status metadata, malformed session records, long/EOF-terminated headers,
+  exact session IDs, string working directories, and prose-only extraction.
+- **Routes and logs:** binary stream validation, distinct request IDs and outcomes for
+  repeated uploads, timing/status fields, and a metadata-only log schema that keeps
+  private request content separate.
 - **Composer and retry:** identical WAV reuse, explicit sequential resubmission,
   conversation binding, cached-text recovery, replacement confirmation, and terminal isolation.
 - **Audio ownership:** abandoned pointer holds, delayed/cancelled starts and resumes, late
@@ -371,9 +428,11 @@ use provider evidence to determine the cause of an empty result.
 ### Vocabulary extraction and limits
 
 The browser observes pi-web's session event/request URLs and obtains the working
-directory from session creation or the UI. `context.cjs` resolves session JSONL files
-under the agent directory and scores only user/assistant prose. It extracts distinctive
-shapes such as camelCase, kebab-case, filenames, paths, acronyms, and short backtick terms.
+directory from session creation or the UI. `context.cjs` matches the complete session ID
+in `<timestamp>_<id>.jsonl`. Its project index reads `cwd` from the first JSONL line with
+a bounded 64 KiB scan, independently of later messages or an incomplete tail. Vocabulary
+scoring reads only user/assistant prose and extracts distinctive shapes such as camelCase,
+kebab-case, filenames, paths, acronyms, and short backtick terms.
 
 Within the text window, rank candidates by **weighted occurrence frequency**: user prose
 gets 1.5 times assistant weight, and the current session gets three times the weight of

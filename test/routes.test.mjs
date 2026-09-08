@@ -1,6 +1,7 @@
 /** Real local HTTP requests, mocked speech service, metadata-only log assertions. */
 import assert from "node:assert/strict";
 import http from "node:http";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { createRequire } from "node:module";
 
@@ -171,6 +172,61 @@ test("transport failures do not log an error message that could contain a URL or
   assert.equal(response.status, 502);
   assert.match(h.errors[0], /result=error.*upstream_status=n\/a$/);
   assert.doesNotMatch(h.errors[0], /PRIVATE_/);
+});
+
+test("primitive thrown values become caller errors with metadata-only service logs", async t => {
+  const h = await harness(t);
+  for (const value of ["PRIVATE_THROWN_VALUE", null, 42]) {
+    h.setResponse(() => { throw value; });
+    const response = await h.post();
+    assert.equal(response.status, 502);
+    assert.equal(response.body.error, String(value));
+    assert.match(h.errors.at(-1), /result=error.*upstream_status=n\/a$/);
+  }
+  assert.doesNotMatch(h.errors.join("\n"), /PRIVATE_THROWN_VALUE/);
+});
+
+test("hostile thrown values still produce a retryable response and private logs", async t => {
+  const h = await harness(t);
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const hostile = {
+    get message() { throw new Error("PRIVATE_GETTER"); },
+    get status() { throw new Error("PRIVATE_STATUS"); },
+    [Symbol.toPrimitive]() { throw new Error("PRIVATE_COERCION"); },
+  };
+  for (const error of [Object.create(null), hostile, revoked.proxy]) {
+    h.setResponse(() => { throw error; });
+    const response = await h.post();
+    assert.equal(response.status, 502);
+    assert.equal(response.body.error, "Unknown error");
+    assert.match(h.errors.at(-1), /result=error.*upstream_status=n\/a$/);
+  }
+  assert.doesNotMatch(h.errors.join("\n"), /PRIVATE_/);
+});
+
+test("non-binary request chunks reject through the route instead of escaping stream callbacks", async t => {
+  const errors = [];
+  t.mock.method(console, "error", message => errors.push(message));
+  t.mock.method(globalThis, "fetch", () => assert.fail("invalid audio must stay local"));
+  let destroyed = false, status, body;
+  const req = Object.assign(new EventEmitter(), {
+    url: "/__voice/transcribe", method: "POST", headers: {},
+    destroy() { destroyed = true; },
+  });
+  const res = {
+    setHeader() {},
+    writeHead(code) { status = code; },
+    end(payload) { body = JSON.parse(payload); },
+  };
+  const handled = createRouter(config())(req, res);
+  assert.doesNotThrow(() => req.emit("data", "PRIVATE_DECODED_AUDIO"));
+  assert.doesNotThrow(() => req.emit("end"));
+  await handled;
+  assert.equal(destroyed, true);
+  assert.equal(status, 502);
+  assert.equal(body.error, "audio stream must emit Buffer chunks");
+  assert.doesNotMatch(errors.join("\n"), /PRIVATE_DECODED_AUDIO/);
 });
 
 test("a zero-byte upload is logged as rejected without calling the speech service", async (t) => {

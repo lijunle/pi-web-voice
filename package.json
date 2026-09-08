@@ -41,8 +41,14 @@
     "node": ">=20.0.0"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "npm run typecheck && npm test",
     "test": "node test/run.mjs",
     "test:retry": "node test/run.mjs e2e-retry.mjs",
     "test:e2e": "node test/run.mjs e2e-edge.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^6.0.3"
   }
 }

@@ -11,13 +11,13 @@ Voice input for pi-web through a Node.js hook.
 
 ## Principles
 
-- Keep the runtime dependency-free and build-free. Integrate through the hook and
-  preserve pi-web's installed files.
+- Keep the runtime dependency-free and build-free. Use JSDoc for server-side type
+  contracts, integrate through the hook, and preserve pi-web's installed files.
 - Keep credentials and personal machine-specific values in documented configuration
   mechanisms, outside tracked files.
 - Preserve the documented privacy boundaries. Insert transcripts into the composer
   for the user to review and send.
-- Run relevant checks (`npm test` by default) with mocked or isolated services. Report
+- Run relevant checks (`npm run check` by default) with mocked or isolated services. Report
   the checks actually run; use live speech services only when requested.
 - Link to existing guides for detailed instructions and record user-visible behavior
   changes under `[Unreleased]` in CHANGELOG.md.

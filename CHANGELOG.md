@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   response failures, composer recovery, and metadata-only request logs.
 - A concise `AGENTS.md` with documentation entry points, implementation/privacy/test
   principles, and writing rules for positive expression and present-tense prose.
+- Strict TypeScript checking of the CommonJS server and CLI through JSDoc, using
+  development-only TypeScript 6 and Node 20 types with a committed dependency lockfile.
+  `npm run typecheck` checks types; `npm run check` also runs the unit suite. Runtime
+  source remains JavaScript and the compiler emits no build artifacts.
+- Regression coverage for CLI/configuration behavior, HTTP forwarding overloads,
+  provider response containers, unknown exceptions, and session-record guards.
 
 ### Changed
 
@@ -48,6 +54,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Keep the development toolchain compatible with Node 20.0.0 by using TypeScript 6's
+  JavaScript CLI, and initialize HTTP fixtures explicitly per test on that test runner.
+- Reject unknown provider names, including inherited object properties, and validate
+  upstream JSON containers before reading fields. Preserve text normalization within
+  valid response objects and ignore malformed session records during vocabulary extraction.
+- Handle ordinary errors, message-bearing objects, and primitive thrown values through
+  shared message/status guards. Contain hostile getters, revoked proxies, and failed
+  string conversion so error reporting still produces a retryable response.
+- Validate binary upload chunks and reject stream-assembly failures through the request
+  promise instead of allowing exceptions to escape asynchronous stream callbacks.
+- Read project metadata from bounded JSONL headers, including long headers and EOF
+  without a newline, instead of interpreting later messages or incomplete tails as metadata.
+  Match complete session IDs rather than accepting a suffix from another session.
+- Preserve split UTF-8 characters throughout HTML injection and search-limit fallback;
+  support byte views and string encodings, and locate insertion points using original
+  string indices so Unicode case folding cannot shift them.
+- Support immutable object/raw-array headers while removing content length from a copy.
+  Pass compressed and explicit non-UTF-8 HTML through unchanged, and propagate native
+  writer errors once rather than retrying a writer that throws.
 - HTML, non-JSON, empty, and malformed responses received by the browser no longer hide
   HTTP status behind parser exceptions such as Safari's “The string did not match the
   expected pattern.” The browser explains directly received non-JSON bodies without

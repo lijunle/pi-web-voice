@@ -322,6 +322,13 @@ interactive shell. With the Azure OpenAI configuration above, startup reports:
 
 ## Diagnostics and troubleshooting
 
+### If the microphone button is missing
+
+Check the active hook path and reload the page after handling pending audio. The hook
+injects into identity-encoded UTF-8 HTML from pi-web; configure that response format at
+the application boundary. A reverse proxy can compress the response after injection.
+Compressed or alternative-charset HTML reaching the hook passes through unchanged.
+
 ### Check the backend first
 
 ```bash

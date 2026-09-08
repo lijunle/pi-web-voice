@@ -22,8 +22,10 @@ const { createRouter } = require("./lib/routes.cjs");
 // A single process may load the hook more than once (parent + child).
 // Only the process that actually serves HTTP matters, and install() is
 // idempotent, but guard anyway so logs are not duplicated.
-if (!global.__PI_WEB_VOICE_INSTALLED__) {
-  global.__PI_WEB_VOICE_INSTALLED__ = true;
+/** @type {typeof globalThis & { __PI_WEB_VOICE_INSTALLED__?: boolean }} */
+const host = globalThis;
+if (!host.__PI_WEB_VOICE_INSTALLED__) {
+  host.__PI_WEB_VOICE_INSTALLED__ = true;
 
   const config = loadConfig();
 

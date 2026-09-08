@@ -4,7 +4,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { transcribe, vadMode } = require("../lib/providers.cjs");
+const { transcribe, vadMode, termBudget } = require("../lib/providers.cjs");
 const audio = Buffer.alloc(6444);
 const terms = ["CLI", "retry_safe", "implementation.md"];
 const languages = ["zh", "en"];
@@ -21,6 +21,43 @@ function azureConfig(deployment = "gpt-transcribe", endpoint = "https://speech.e
     limits: { timeoutMs: 1000 },
   };
 }
+
+test("unknown providers and inherited property names stay outside the backend registry", async () => {
+  for (const provider of ["unknown", "toString", "constructor", "__proto__"]) {
+    assert.equal(termBudget(provider), 50);
+    await assert.rejects(transcribe(audio, { provider }), /unknown provider/);
+  }
+});
+
+for (const body of [null, [], "text", 42]) {
+  test(`OpenAI-style transcription rejects a non-object response: ${JSON.stringify(body)}`, async t => {
+    capture(t, [{ body }]);
+    await assert.rejects(transcribe(audio, azureConfig()), /must be a JSON object/);
+  });
+}
+
+test("OpenAI-style object responses preserve missing and non-string text normalization", async t => {
+  capture(t, [{ body: {} }, { body: { text: 42 } }]);
+  assert.equal(await transcribe(audio, azureConfig()), "");
+  assert.equal(await transcribe(audio, azureConfig()), "42");
+});
+
+test("Azure Speech checks phrase containers and preserves text normalization", async t => {
+  const config = {
+    provider: "azure-speech",
+    azureSpeech: { endpoint: "https://speech.example.invalid", key: "test-only-key", model: "MAI-Transcribe-2", apiVersion: "2025-10-15", style: "clean" },
+    limits: { timeoutMs: 1000 },
+  };
+  capture(t, [
+    { body: null }, { body: { combinedPhrases: {} } }, { body: { combinedPhrases: [null] } },
+    { body: {} }, { body: { combinedPhrases: [{ text: "hello" }, { text: 42 }] } },
+  ]);
+  for (const message of [/JSON object/, /must be an array/, /phrase must be a JSON object/]) {
+    await assert.rejects(transcribe(audio, config), message);
+  }
+  assert.equal(await transcribe(audio, config), "");
+  assert.equal(await transcribe(audio, config), "hello 42");
+});
 
 function capture(t, replies) {
   const calls = [];
