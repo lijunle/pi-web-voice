@@ -1,4 +1,4 @@
-name: E2E (live speech)
+name: E2E
 
 on:
   workflow_dispatch:

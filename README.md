@@ -1,7 +1,7 @@
 # pi-web-voice
 
 [![CI](https://github.com/lijunle/pi-web-voice/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunle/pi-web-voice/actions/workflows/ci.yml)
-[![Live E2E](https://github.com/lijunle/pi-web-voice/actions/workflows/e2e.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/lijunle/pi-web-voice/actions/workflows/e2e.yml)
+[![E2E](https://github.com/lijunle/pi-web-voice/actions/workflows/e2e.yml/badge.svg?branch=main&event=workflow_dispatch)](https://github.com/lijunle/pi-web-voice/actions/workflows/e2e.yml)
 
 Voice input for [pi-web](https://github.com/agegr/pi-web) through a standalone Node.js hook.
 

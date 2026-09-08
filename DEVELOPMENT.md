@@ -375,7 +375,7 @@ validates commit `bb1d9de` through the protected `speech-live` environment on Ub
 Azure OpenAI `gpt-transcribe` returns 72 characters from 5.0 seconds of synthetic audio,
 with automatic VAD and 1.3 seconds of route time. The full browser check passes speech
 recognition, exactly-once draft insertion, terminal isolation, and audio cleanup.
-The README's Live E2E badge reports the latest manual `main` run, independently of the
+The README's E2E badge reports the latest manual `main` run, independently of the
 per-commit CI checks.
 
 Publish has no execution in this record. Its tag/version and registry guards have
@@ -405,7 +405,7 @@ and `AZURE_SPEECH_KEY` secret. For an OpenAI-compatible service, select `openai`
 `PI_VOICE_OPENAI_MODEL`. See [backend settings](USAGE.md#backends). Supply only the selected
 backend's key, and make its endpoint reachable from the GitHub-hosted runner.
 
-Choose **Actions → E2E (live speech) → Run workflow**, select `main`, and check
+Choose **Actions → E2E → Run workflow**, select `main`, and check
 `confirm_live`. Approve the environment deployment as configured. Secrets are scoped
 to the final E2E step, after dependency/browser installation. The default Azure OpenAI
 configuration fails before a speech call when its key or endpoint is missing.

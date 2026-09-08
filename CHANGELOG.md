@@ -48,6 +48,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Shorten the workflow and README badge display names to `E2E`, preserving the
+  manual confirmation and speech-service approval requirements.
 - Publish automatically on newly created stable `vX.Y.Z` tags instead of GitHub
   Release publication, with a tag-only `npm` environment and no human approval or
   wait timer. Preserve the version/registry checks, full CI gate, and OIDC provenance;
