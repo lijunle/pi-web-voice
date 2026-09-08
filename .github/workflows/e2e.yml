@@ -1,0 +1,54 @@
+name: E2E (live speech)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_live:
+        description: Send one synthetic speech take to the configured service (usage may be billed)
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speech-live
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  speech:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_live
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: speech-live
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm ci
+      - name: Install the external test host
+        run: npm install --global @agegr/pi-web@0.9.0
+      - name: Install managed Chromium and Linux libraries
+        run: npx playwright install --with-deps chromium
+      - name: Run one live browser round trip
+        run: npm run test:e2e
+        env:
+          NODE_OPTIONS: ""
+          PI_VOICE_PROVIDER: ${{ vars.PI_VOICE_PROVIDER || 'azure-openai' }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          PI_VOICE_DEPLOYMENT: ${{ vars.PI_VOICE_DEPLOYMENT || 'gpt-transcribe' }}
+          AZURE_SPEECH_ENDPOINT: ${{ vars.AZURE_SPEECH_ENDPOINT }}
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          PI_VOICE_OPENAI_BASE_URL: ${{ vars.PI_VOICE_OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PI_VOICE_OPENAI_MODEL: ${{ vars.PI_VOICE_OPENAI_MODEL || 'whisper-1' }}

@@ -338,6 +338,89 @@ use a manually triggered job with environment approval, a dedicated speech-servi
 in an Environment Secret, and endpoint/deployment settings in environment variables.
 Keep real speech credentials outside pull-request jobs.
 
+### GitHub Actions
+
+The repository has three workflows with separate credentials and triggers:
+
+| Workflow | Trigger | Checks / action | Credentials |
+| --- | --- | --- | --- |
+| [CI](https://github.com/lijunle/pi-web-voice/actions/workflows/ci.yml) | Push to `main`, pull request, manual run, or reusable call | Node 20.0.0/22/24/26 type/unit/server checks; Node 24 browser integration; package inspection | Read-only repository token; mock speech |
+| [E2E](https://github.com/lijunle/pi-web-voice/actions/workflows/e2e.yml) | Manual run on `main` with `confirm_live` selected | One real speech/browser round trip | `speech-live` Environment |
+| [Publish](https://github.com/lijunle/pi-web-voice/actions/workflows/publish.yml) | A published, stable GitHub Release | Validate tag/version, run reusable CI, publish npm with provenance | `npm` Environment and OIDC |
+
+CI uses Ubuntu 24.04. It installs `@agegr/pi-web@0.9.0` explicitly for browser checks;
+that package supplies its own pi coding agent dependency. Playwright installs its locked
+Chromium and Linux libraries with `--with-deps`. Node-only jobs use the locked
+development tools and local fixtures. Keep the runtime dependency list empty; the external host
+installation belongs to test setup. The host's top-level version is pinned, while its
+transitive ranges resolve during installation.
+
+Actions use full commit pins and checkout leaves Git credentials out of the working
+tree. Superseded CI runs cancel; live and publish runs serialize separately. CI uses
+local fixtures and mock responses, independently of live-provider or publishing setup.
+Use the Actions logs to inspect each job's actual commands and test results.
+
+#### Configure live E2E
+
+Create the `speech-live` Environment in GitHub repository settings. Restrict deployments
+to `main` and configure required reviewers before storing credentials. Add values through
+GitHub settings; keep key values out of chat, commits, and workflow inputs.
+
+For the default Azure OpenAI backend:
+
+| Environment setting | Kind | Value |
+| --- | --- | --- |
+| `AZURE_OPENAI_API_KEY` | Secret | A dedicated test resource key |
+| `AZURE_OPENAI_ENDPOINT` | Variable | The complete transcription endpoint |
+| `PI_VOICE_DEPLOYMENT` | Variable, optional | Deployment name; default `gpt-transcribe` |
+| `PI_VOICE_PROVIDER` | Variable, optional | Default `azure-openai` |
+
+For Azure Speech, select `azure-speech` and supply the `AZURE_SPEECH_ENDPOINT` variable
+and `AZURE_SPEECH_KEY` secret. For an OpenAI-compatible service, select `openai`, supply
+`OPENAI_API_KEY` as a secret, and optionally set `PI_VOICE_OPENAI_BASE_URL` and
+`PI_VOICE_OPENAI_MODEL`. See [backend settings](USAGE.md#backends). Supply only the selected
+backend's key, and make its endpoint reachable from the GitHub-hosted runner.
+
+Choose **Actions → E2E (live speech) → Run workflow**, select `main`, and check
+`confirm_live`. Approve the environment deployment as configured. Secrets are scoped
+to the final E2E step, after dependency/browser installation. The default Azure OpenAI
+configuration fails before a speech call when its key or endpoint is missing.
+A run without the confirmation or on another branch skips
+the speech job; treat that as an unexecuted test, not live validation.
+
+#### Configure npm publishing
+
+Create an `npm` Environment with release approval and deployment rules for release tags
+such as `v*`. Protect release-tag creation for maintainers. In the `pi-web-voice` package's
+npm settings, add a [GitHub Actions trusted publisher](https://docs.npmjs.com/trusted-publishers/):
+
+- Organization/user: `lijunle`
+- Repository: `pi-web-voice`
+- Workflow filename: `publish.yml`
+- Environment: `npm`
+- Allowed action: enable direct `npm publish`
+
+The publish job uses GitHub-hosted Ubuntu, Node 24, npm 11.19.0, and `id-token: write`.
+It obtains short-lived publishing credentials through OIDC; keep a long-lived npm token
+out of GitHub Secrets. Dependency installation and publication use `--ignore-scripts`,
+and the compiler has no build output to publish.
+
+For a release:
+
+1. Select an unused stable version. Update `package.json`, `package-lock.json`, and the
+   dated changelog entry; use `npm version patch --no-git-tag-version` for a patch bump.
+2. Run `npm run check`, review `npm pack --dry-run --ignore-scripts`, and commit the
+   release preparation.
+3. Tag the reviewed commit as `v<package.json version>` and push the commit and tag.
+4. Publish a non-prerelease GitHub Release for that tag, then approve the `npm`
+   environment deployment as configured.
+
+The workflow verifies package/lockfile versions, repository identity, and that the
+version is absent from npm, then runs the complete reusable CI before publishing the
+release commit. Drafts, prereleases, ordinary pushes, and live E2E do not publish a
+package. Use a new version for each npm publication; `0.1.7` already exists in the registry.
+Live speech credentials and E2E success are separate from this publishing gate.
+
 ### Automated coverage
 
 - **Test harness:** pending evaluations and body reads, late rejections, malformed-response

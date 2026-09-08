@@ -1,5 +1,7 @@
 # pi-web-voice
 
+[![CI](https://github.com/lijunle/pi-web-voice/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunle/pi-web-voice/actions/workflows/ci.yml)
+
 Voice input for [pi-web](https://github.com/agegr/pi-web) through a standalone Node.js hook.
 
 Click the microphone, wait for the clock, and speak. Your transcript appears at the
@@ -84,6 +86,7 @@ speech backend when you want speech recognition.
 | Configure a backend, record, or deploy as a service | [Usage guide](https://github.com/lijunle/pi-web-voice/blob/main/USAGE.md) |
 | Understand an error or find its request log | [Troubleshooting](https://github.com/lijunle/pi-web-voice/blob/main/USAGE.md#diagnostics-and-troubleshooting) |
 | Modify the code or run tests | [Development guide](https://github.com/lijunle/pi-web-voice/blob/main/DEVELOPMENT.md) |
+| Configure GitHub Actions or publish a release | [CI/CD setup](https://github.com/lijunle/pi-web-voice/blob/main/DEVELOPMENT.md#github-actions) |
 | Understand implementation choices and transcription experiments | [Design decisions and validation](https://github.com/lijunle/pi-web-voice/blob/main/DEVELOPMENT.md#design-decisions-and-validation) |
 | Review release changes before upgrading | [Changelog](https://github.com/lijunle/pi-web-voice/blob/main/CHANGELOG.md) |
 

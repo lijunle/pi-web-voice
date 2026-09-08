@@ -1,0 +1,88 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    if: github.repository == 'lijunle/pi-web-voice' && !github.event.release.prerelease
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Validate stable tag, lockfile, repository, and unused npm version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          async function main() {
+            const pkg = require('./package.json');
+            const lock = require('./package-lock.json');
+            assert.equal(pkg.name, 'pi-web-voice');
+            assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+            assert.equal(process.env.RELEASE_TAG, `v${pkg.version}`, 'release tag must match package.json');
+            assert.equal(lock.version, pkg.version, 'lockfile version must match');
+            assert.equal(lock.packages[''].version, pkg.version, 'lockfile root version must match');
+            assert.ok(!pkg.private, 'publish a public package');
+            assert.equal(pkg.repository.url, `git+https://github.com/${process.env.GITHUB_REPOSITORY}.git`);
+            const response = await fetch(`https://registry.npmjs.org/pi-web-voice/${pkg.version}`, {
+              signal: AbortSignal.timeout(15000),
+            });
+            assert.equal(response.status, 404, response.ok
+              ? 'this version already exists on npm; choose a new version'
+              : 'cannot confirm npm version availability');
+            console.log(`Release ${process.env.RELEASE_TAG} is ready for validation`);
+          }
+          main().catch(error => { console.error(error.message); process.exitCode = 1; });
+          NODE
+
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Use the pinned OIDC-capable npm CLI
+        run: npm install --global npm@11.19.0
+      - run: npm ci --ignore-scripts
+      - run: npm pack --dry-run --ignore-scripts
+      - name: Publish with npm trusted publishing and provenance
+        run: npm publish --access public --provenance --ignore-scripts

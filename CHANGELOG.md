@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- GitHub Actions CI for Node 20.0.0/22/24/26 checks and Ubuntu Playwright integration
+  with an explicitly installed pi-web 0.9.0 host; CI uses mock speech without service keys.
+- A manually confirmed live E2E workflow scoped to the `speech-live` environment, and
+  a stable-release npm publishing workflow with version validation, reusable CI,
+  an `npm` environment, OIDC trusted publishing, and provenance. See
+  [GitHub Actions setup](DEVELOPMENT.md#github-actions) for the external configuration.
 - An explicit live `test:e2e` that drives Playwright Chromium through an isolated
   pi-web host and the configured speech service using a committed synthetic speech
   fixture. It requires recognizable text, exact draft insertion, resource cleanup,
