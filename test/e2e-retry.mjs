@@ -200,7 +200,7 @@ try {
     check(`${language}: Retry is an inline button with link appearance`, appearance.label === label && appearance.tag === "BUTTON" && appearance.type === "button" && appearance.inline && !appearance.toolbar);
     check(`${language}: white underlined text, no border or background`, appearance.color === "rgb(255, 255, 255)" && appearance.decoration === "underline" && appearance.border === "0px" && appearance.background === "rgba(0, 0, 0, 0)");
     check(`${language}: touch target stays at least 44 × 44`, appearance.width >= 44 && appearance.height >= 44);
-    check(`${language}: original red notice and full error survive`, appearance.red === "rgb(180, 52, 44)" && appearance.error.endsWith("Temporary service failure"));
+    check(`${language}: original red notice identifies the HTTP failure and keeps full details`, appearance.red === "rgb(180, 52, 44)" && appearance.error.startsWith(language === "en" ? "[Server]" : "[服务端]") && appearance.error.includes("HTTP 503") && appearance.error.endsWith("Temporary service failure"));
     await sleep(4200);
     check(`${language}: error and Retry outlive the old four-second timeout`, await evaluate('window.__piWebVoice.ui.toastElement.isConnected && !window.__piWebVoice.ui.retryButton.disabled'));
 
@@ -245,6 +245,18 @@ try {
     })()`));
     check(`${language}: every attempt uploads identical WAV bytes`, uploads[start].length === 96044 && uploads.slice(start, start + 3).every(bytes => bytes.equals(uploads[start])));
     check(`${language}: no microphone opened and no terminal text touched`, await evaluate('window.__micOpens===0 && document.querySelector(".xterm-helper-textarea").value==="Leave the terminal alone"'));
+
+    const localMessage = await evaluate(`(async () => {
+      const {ui,recorder}=window.__piWebVoice;
+      recorder.chunks=[]; recorder.active=true; ui.state='recording'; await ui.stop();
+      return ui.toastElement.firstElementChild.textContent;
+    })()`);
+    check(`${language}: zero samples are labeled client-side and never uploaded`, uploads.length === start + 3 && localMessage.startsWith(language === "en" ? "[Client · recording]" : "[客户端·录音]") && localMessage.includes("AudioContext: none"));
+    await evaluate('window.__recordTake()');
+    await respond(start + 4, 200, { text: "" });
+    await idle();
+    const emptyMessage = await evaluate('window.__piWebVoice.ui.toastElement.firstElementChild.textContent');
+    check(`${language}: server empty text has a different label and HTTP status`, emptyMessage.startsWith(language === "en" ? "[Server · empty transcript]" : "[服务端·空结果]") && emptyMessage.includes("HTTP 200") && await evaluate('window.__piWebVoice.ui.pending===null && window.__piWebVoice.ui.retryButton===null'));
   }
 
   // Refresh is intentionally not durable storage. Assert the documented limit

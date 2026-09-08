@@ -22,8 +22,17 @@
   disabled while a request is running; another failure updates the error without stacking
   notices, and success removes both the notice and pending recording.
 - Long error messages wrap and scroll so Retry remains reachable on narrow screens.
-- Successful empty transcripts retain the existing “No speech detected” behaviour and do not
-  offer Retry. Ordinary notices still disappear after four seconds.
+- Replace the ambiguous “No speech detected” notice with separate client-no-audio and
+  server-empty-transcript messages. Client microphone/context/composer errors, network failures,
+  HTTP failures and invalid server responses have distinct labels; HTTP errors retain status
+  codes even for non-JSON responses. Valid request IDs are shown when the backend supplies them.
+- Treat missing/non-string transcript fields as retryable invalid responses, not empty speech.
+  Explicitly empty transcripts still leave the draft untouched and do not offer Retry.
+  Ordinary notices still disappear after four seconds.
+- Resume interrupted as well as suspended audio contexts before recording, replace closed
+  contexts, and bound resume waits to three seconds. Failed activation releases the microphone;
+  zero captured samples reset the context for the next take and report the pre-stop state.
+  This addresses Safari lifecycle cases without claiming every failure is a cache problem.
 
 ### Documentation and verification
 
@@ -31,6 +40,9 @@
   charges, and how individual retry requests relate to metadata-only server logs.
 - Cover network, HTTP and JSON failures, retained WAV data, cached-text recovery, conversation
   changes, toast lifetime, localization, action styling and replacement confirmation in unit tests.
+- Cover client/server diagnostic distinctions, HTTP/JSON/schema errors, optional request IDs,
+  and Safari-style interrupted, rejected, stalled and timed-out audio-context resumes. Clarify
+  that the recording clock indicates graph readiness, not proof of uninterrupted sample delivery.
 - Check that repeated uploads receive distinct request IDs and appropriate error/success logs
   without logging audio, transcripts, credentials, session IDs, paths or upstream error bodies.
 - Add `npm run test:retry`: a deterministic, self-contained headless-browser regression with
@@ -46,3 +58,6 @@
   page discard. There is no recording history, download control or automatic retry loop.
 - The runtime logging format is unchanged by the retry feature. Each uploaded attempt is a
   separate request; a cached-text insertion does not generate another service request or log.
+  Client failures before an upload likewise do not create a server transcription log.
+- Audio-context recovery is covered with simulated lifecycle states; the reported iPhone Safari
+  problem still needs device-side confirmation after deploying the change.

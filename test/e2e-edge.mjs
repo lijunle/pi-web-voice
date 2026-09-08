@@ -194,13 +194,13 @@ try {
   })()`);
   check("red before the microphone opens", paintedAtOnce === "recording,\u2026", paintedAtOnce);
 
-  // ...and the clock only starts when there is audio to count, so a word said
-  // after the digits appear cannot be lost.
+  // ...and the clock only starts once the microphone and audio graph are
+  // ready. This checks startup timing, not ongoing sample delivery.
   await sleep(1800);
   const live = await evaluate(
     `[window.__piWebVoice.ui.arming, document.getElementById("pi-web-voice-button").textContent].join(",")`,
   );
-  check("clock starts on the first sample", live === "false,0:00", live);
+  check("clock starts when the audio graph is ready", live === "false,0:00", live);
 
   const waited = await evaluate(`window.__piWebVoice.ui.waitedMs`);
   check("wait measured", waited >= 1200, `${waited}ms`);
@@ -349,7 +349,7 @@ try {
     `[...document.querySelectorAll("body > div")].map(d => d.textContent).filter(t => t && t.length < 120).join(" | ")`,
   );
   const spoke = composed.trim().length > 0;
-  const reported = /no speech|\u6ca1\u6709\u8bc6\u522b\u5230|failed|\u5931\u8d25/i.test(notice);
+  const reported = /no transcription text|no audio was captured|未返回转写文字|未采集到音频|failed|失败/i.test(notice);
   check(
     "round trip completed",
     spoke || reported,

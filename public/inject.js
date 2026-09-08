@@ -25,6 +25,9 @@
   // claims it milliseconds later; anything longer was a finger that slid off
   // the button, or a hold long enough that it can pay for its own stream.
   const WARM_MS = 1500;
+  // Safari can leave resume() pending after an interruption. Do not leave the
+  // user stuck at "opening" with an owned microphone indefinitely.
+  const AUDIO_RESUME_MS = 3000;
   const SHORTCUT = "mod+shift+v";
 
   const SAMPLE_RATE = 16000;
@@ -100,13 +103,20 @@
         working: "转写中…",
         insecure: "浏览器只在 HTTPS 或 localhost 下允许使用麦克风",
         denied: "麦克风权限被拒绝",
-        empty: "没有识别到语音",
-        failed: "转写失败",
+        empty: "[服务端·空结果] 音频已提交，但服务器未返回转写文字",
+        captureEmpty: "[客户端·录音] 未采集到音频，未上传。请重新录音；若仍失败，请关闭并重新打开此页面",
+        microphoneFailed: "[客户端·麦克风] 无法启动麦克风",
+        audioFailed: "[客户端·音频] 音频上下文未能启动。请重新录音；若仍失败，请关闭并重新打开此页面",
+        networkFailed: "[网络] 无法完成转写请求，录音已保留，可重试",
+        responseReadFailed: "[网络] 读取服务器响应中断，录音已保留，可重试",
+        invalidResponse: "[服务端响应] 转写响应格式无效，录音已保留，可重试",
+        clientFailed: "[客户端] 无法处理转写结果，录音已保留，可重试",
+        failed: "[服务端] 转写请求失败",
         retry: "重试",
         retryTitle: "重试转写 — 使用刚才的录音，无需重新说话",
         replaceRecording: "上一段录音还未处理成功。放弃它并开始新的录音？",
-        changedSession: "请回到录音时的会话，再点击重试",
-        noComposer: "找不到输入框，转写结果",
+        changedSession: "[客户端·会话] 请回到录音时的会话，再点击重试",
+        noComposer: "[客户端·输入框] 找不到输入框，已保留转写结果",
       }
     : {
         idle: "Voice input — click to start, click again to stop",
@@ -115,14 +125,37 @@
         working: "Transcribing…",
         insecure: "Microphone needs HTTPS or localhost",
         denied: "Microphone permission denied",
-        empty: "No speech detected",
-        failed: "Transcription failed",
+        empty: "[Server · empty transcript] Audio was submitted, but the server returned no transcription text",
+        captureEmpty: "[Client · recording] No audio was captured; nothing was uploaded. Record again; if this persists, close and reopen this page",
+        microphoneFailed: "[Client · microphone] Could not start the microphone",
+        audioFailed: "[Client · audio] Audio context could not start. Record again; if this persists, close and reopen this page",
+        networkFailed: "[Network] Could not complete the transcription request; recording kept for retry",
+        responseReadFailed: "[Network] Could not finish reading the server response; recording kept for retry",
+        invalidResponse: "[Server response] Invalid transcription response; recording kept for retry",
+        clientFailed: "[Client] Could not handle the transcript; recording kept for retry",
+        failed: "[Server] Transcription request failed",
         retry: "Retry",
         retryTitle: "Retry transcription — reuse the previous recording",
         replaceRecording: "The previous recording is still pending. Discard it and start a new recording?",
-        changedSession: "Return to the conversation where you recorded, then retry",
-        noComposer: "No composer found; transcript",
+        changedSession: "[Client · conversation] Return to the conversation where you recorded, then retry",
+        noComposer: "[Client · composer] No composer found; transcript kept",
       };
+
+  // Expected failures already have a source-specific message. Unexpected local
+  // exceptions must not be mislabeled as a speech-service failure.
+  class VoiceError extends Error {}
+
+  function responseMessage(message, response) {
+    const details = [];
+    if (Number.isInteger(response.status)) details.push(`HTTP ${response.status}`);
+    const id = response.headers?.get?.("x-pi-voice-request-id");
+    // Only display the opaque UUID, never arbitrary header content. Older
+    // installations omit this header and still get the HTTP status label.
+    if (typeof id === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)) {
+      details.push(`request ${id}`);
+    }
+    return details.length ? `${message} (${details.join(" · ")})` : message;
+  }
 
   // ── audio ────────────────────────────────────────────────────────────────
 
@@ -172,10 +205,9 @@
   const recorder = {
     active: false,
     stream: null,
-    // Kept for the life of the page and only suspended between takes.
+    // Reused between healthy takes; failed/empty capture discards it.
     // Constructing one makes the OS open an audio session; resuming a
-    // suspended one does not, so every take after the first reaches the first
-    // sample sooner. The microphone stream is not kept — that is what lights
+    // suspended one does not, so later takes normally reach samples sooner. The microphone stream is not kept — that is what lights
     // the recording indicator, and it is released on every stop.
     context: null,
     node: null,
@@ -183,6 +215,35 @@
     startedAt: 0,
     // A microphone opened at finger-down, waiting for the press to claim it.
     warming: null,
+
+    discardContext() {
+      const context = this.context;
+      this.context = null;
+      try { context?.close()?.catch(() => {}); } catch { /* best effort */ }
+    },
+
+    async resumeContext() {
+      if (!this.context || this.context.state === "closed") {
+        this.context = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const context = this.context;
+      let timer;
+      try {
+        if (context.state !== "running") {
+          // In particular, iOS Safari uses "interrupted" after tab switches,
+          // backgrounding and audio-device interruptions, not only "suspended".
+          await Promise.race([
+            context.resume(),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new VoiceError(T.audioFailed)), AUDIO_RESUME_MS);
+            }),
+          ]);
+        }
+        if (context.state !== "running") throw new VoiceError(T.audioFailed);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
 
     /** Opens the microphone and the audio session, recording nothing yet. */
     async open() {
@@ -192,11 +253,14 @@
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
-      if (!this.context) {
-        this.context = new (window.AudioContext || window.webkitAudioContext)();
+      try {
+        await this.resumeContext();
+        return stream;
+      } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        this.discardContext();
+        throw error instanceof VoiceError ? error : new VoiceError(`${T.audioFailed}: ${error.message}`);
       }
-      if (this.context.state === "suspended") await this.context.resume();
-      return stream;
     },
 
     /**
@@ -226,6 +290,8 @@
       const warmed = this.warming;
       this.warming = null;
       this.stream = (warmed && (await warmed)) || (await this.open());
+      // A warmed context may have been interrupted before the click claimed it.
+      if (this.context.state !== "running") await this.resumeContext();
 
       const source = this.context.createMediaStreamSource(this.stream);
       // ScriptProcessor is deprecated but is the only node supported by every
@@ -257,7 +323,7 @@
       try {
         this.node?.disconnect();
         this.stream?.getTracks().forEach((track) => track.stop());
-        this.context?.suspend();
+        this.context?.suspend()?.catch(() => {});
       } catch {
         /* teardown is best effort */
       }
@@ -568,8 +634,8 @@
     // context cost a few hundred milliseconds on a phone even when permission
     // was granted long ago, and a button that stays grey that long reads as a
     // press the page missed. What the red cannot say is that the microphone is
-    // open yet, so the wait shows an ellipsis and the clock starts on the
-    // first sample: no word said after the digits appear can be lost.
+    // open yet, so the wait shows an ellipsis and the clock starts once the
+    // audio graph is ready. Interruptions can still prevent sample delivery.
     async start() {
       if (this.state !== "idle" || this.arming) return;
       if (this.pending && !window.confirm(T.replaceRecording)) return;
@@ -584,10 +650,15 @@
       try {
         await recorder.start();
       } catch (error) {
+        recorder.stop();
+        recorder.discardContext();
         if (this.state !== "recording") return; // already pressed again
         this.state = "idle";
         const denied = error?.name === "NotAllowedError";
-        this.toast(denied ? T.denied : error.message || T.failed, true, !!this.pending);
+        const message = error instanceof VoiceError
+          ? error.message
+          : `${T.microphoneFailed}: ${denied ? T.denied : error.message}`;
+        this.toast(message, true, !!this.pending);
         return;
       } finally {
         this.arming = false;
@@ -609,8 +680,8 @@
       // actually costs on this device, rather than what it is assumed to cost.
       this.waitedMs = recorder.startedAt - pressedAt;
 
-      // The clock counts audio, not the wait: recorder.startedAt is stamped
-      // when the stream opened, so 0:00 means zero seconds of speech recorded.
+      // Count time since the stream/graph opened, excluding microphone wait.
+      // The clock is a readiness cue, not a sample-delivery monitor.
       this.render("0:00");
       this.timer = setInterval(() => {
         const seconds = Math.floor((Date.now() - recorder.startedAt) / 1000);
@@ -630,11 +701,15 @@
         return;
       }
 
+      const audioState = recorder.context?.state || "none";
       const wav = recorder.stop();
       this.state = "idle";
       if (!wav) {
+        // A running-but-stalled Safari context can also yield no callbacks.
+        // Recreate it on the next take rather than requiring a page reload.
+        recorder.discardContext();
         this.render();
-        this.toast(T.empty);
+        this.toast(`${T.captureEmpty} (AudioContext: ${audioState})`);
         return;
       }
 
@@ -656,28 +731,48 @@
       this.render();
 
       try {
-        if (!sameSession()) throw new Error(T.changedSession);
+        if (!sameSession()) throw new VoiceError(T.changedSession);
         if (take.text === undefined) {
-          const response = await nativeFetch(take.url, {
-            method: "POST",
-            headers: { "content-type": "audio/wav" },
-            body: take.wav,
-            credentials: "include",
-          });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || T.failed);
-          take.text = (result.text || "").trim();
+          let response;
+          try {
+            response = await nativeFetch(take.url, {
+              method: "POST",
+              headers: { "content-type": "audio/wav" },
+              body: take.wav,
+              credentials: "include",
+            });
+          } catch (error) {
+            throw new VoiceError(`${T.networkFailed}: ${error.message}`);
+          }
+          let result;
+          try {
+            result = await response.json();
+          } catch (error) {
+            const message = !response.ok ? T.failed
+              : error?.name === "SyntaxError" ? T.invalidResponse : T.responseReadFailed;
+            throw new VoiceError(`${responseMessage(message, response)}: ${error.message}`);
+          }
+          if (!response.ok) {
+            const detail = typeof result?.error === "string" ? result.error : result?.error?.message;
+            throw new VoiceError(`${responseMessage(T.failed, response)}${detail ? `: ${detail}` : ""}`);
+          }
+          // A missing/malformed text field is not a successful empty transcript.
+          if (typeof result?.text !== "string") {
+            throw new VoiceError(responseMessage(T.invalidResponse, response));
+          }
+          take.text = result.text.trim();
+          take.emptyMessage = responseMessage(T.empty, response);
         }
 
-        // A successful empty response (including service-side VAD) is not a
-        // failed request. Keep the existing no-speech behaviour.
+        // An explicit empty string is a server result, not proof that the
+        // browser captured no audio or that the user did not speak.
         if (!take.text) {
-          this.toast(T.empty);
+          this.toast(take.emptyMessage);
         } else {
           // The user may have changed conversations while the request ran.
           // Keep the text as well as the WAV so returning and retrying inserts
           // it without paying for another transcription.
-          if (!sameSession()) throw new Error(T.changedSession);
+          if (!sameSession()) throw new VoiceError(T.changedSession);
           const textarea = findComposer();
           if (!textarea) {
             this.toast(`${T.noComposer}: ${take.text}`, true, true);
@@ -688,7 +783,8 @@
         }
         this.pending = null;
       } catch (error) {
-        this.toast(`${T.failed}: ${error.message}`, true, true);
+        const message = error instanceof VoiceError ? error.message : `${T.clientFailed}: ${error.message}`;
+        this.toast(message, true, true);
       } finally {
         this.state = "idle";
         this.render();

@@ -118,16 +118,17 @@ audio exists before the browser hands the stream over. Anything said in that win
 gone — not dropped by pi-web-voice, never recorded at all.
 
 So the button says which is which. `…` means the press landed and the microphone is
-opening. The clock replacing it — `0:00`, with the icon pulsing — means the first sample
-is in. **Start talking when the digits appear**, and nothing can be lost, because the
-clock counts recorded audio rather than time since the press.
+opening. The clock replacing it — `0:00`, with the icon pulsing — means the microphone
+and audio graph are ready. **Wait for the digits before talking.** The clock excludes the
+opening delay, but it is not a guarantee that a browser/device interruption cannot stop
+samples arriving; those failures are reported separately below.
 
 The wait is real, so it is measured rather than guessed. Each [transcription log](#transcription-logs)
 includes `mic opened in 340ms` when the browser reports that measurement.
 
-Two things keep that number down. The audio context is kept for the life of the page and
-only suspended between takes, so the OS opens an audio session once rather than once per
-recording — the first take after a page load is the slow one. And the microphone is asked
+Two things keep that number down. A healthy audio context is reused and suspended between
+takes, so the OS usually opens an audio session once rather than once per recording — the
+first take after a page load is the slow one. And the microphone is asked
 for at finger-down rather than at the click, so a tap spends its own press time opening
 it; the click still decides whether anything is recorded, which is why the keyboard and
 VoiceOver keep working, at the cost of paying the whole wait.
@@ -152,8 +153,9 @@ retrying, the error remains visible and the action is disabled with a "Transcrib
 
 Repeated failures update that same notice and keep the recording available; success clears
 the recording and removes the notice. Requests are never retried automatically, and repeated
-clicks cannot send parallel attempts. Successful empty responses still show "No speech detected"
-without a retry, and ordinary notices still disappear after four seconds.
+clicks cannot send parallel attempts. Successful empty responses show an explicit
+**server empty transcript** notice without a retry; ordinary notices still disappear after
+four seconds.
 
 Only the pending take is kept, in this page's memory — not on disk. Refreshing, closing,
 or the browser discarding/reloading the page loses it; retry before doing any of those.
@@ -161,6 +163,39 @@ Starting a new recording asks before replacing a pending one; a denied microphon
 cancelled opening leaves the old take available. If you switch conversations,
 return to the original one to retry. A transcript with no available composer is retained too,
 so retrying once the composer returns inserts the cached text without another service call.
+
+### Identify where a failure happened
+
+The old "No speech detected" notice conflated two different paths. Notices now identify the
+source in English or Chinese, using the browser's language:
+
+| Notice prefix | Meaning | Server request/log? |
+| --- | --- | --- |
+| `Client · microphone` / `Client · audio` | Permission, microphone startup, or audio-context activation failed | No audio uploaded |
+| `Client · recording` | Zero audio samples captured; the notice includes the pre-stop `AudioContext` state | Nothing uploaded, so no transcription log |
+| `Network` | Fetch failed or reading the response was interrupted; audio remains available for Retry | Unknown; the server may already have processed it |
+| `Server` | A non-success HTTP response; the notice retains its status and available error details | An HTTP response was received |
+| `Server response` | Invalid JSON or a missing/non-string `text` field; audio is kept for Retry | Response received, but unusable |
+| `Server · empty transcript` | A valid response explicitly returned empty text after audio was submitted | Completion log with `0 chars`; not proof that VAD rejected speech |
+| `Client · conversation` / `Client · composer` / `Client` | Local conversation/composer handling failed | Received text is retained for local recovery where available |
+
+Server notices include the HTTP status and, when supplied by the installed backend, a validated
+`x-pi-voice-request-id` for matching logs. Older backends without that header still show the
+source and HTTP status. Client-only failures are not sent to a separate telemetry endpoint.
+
+### Safari after switching tabs or returning from the background
+
+Closing and reopening a Safari page also recreates its microphone/audio state; recovery after
+that is not proof of a stale-script cache. The injected script is served with `Cache-Control:
+no-store`, though an already open page needs a reload to execute an updated script.
+
+[iOS Safari can leave an AudioContext in `interrupted` state](https://developer.mozilla.org/en-US/docs/Web/API/BaseAudioContext/state#resuming_interrupted_play_states_in_ios_safari).
+Before recording, both interrupted and suspended contexts are resumed and must reach `running`.
+A closed context is replaced. Resume attempts are bounded to three seconds; failure releases
+the microphone and reports a client-side audio error instead of leaving the UI stuck opening.
+A context that produces no samples is also discarded so the next take starts with a fresh one.
+This handles known lifecycle cases but does not establish the cause of every Safari failure;
+physical iPhone retesting is still needed. Do not clear website data as a first troubleshooting step.
 
 ## Backends
 
@@ -232,8 +267,8 @@ background voice or quiet utterance. Live probes are not part of `npm test`.
 The parameter is a scalar multipart field, `chunking_strategy=auto`. On the tested endpoint,
 invalid scalar values returned 400, while bracketed fields such as `chunking_strategy[type]`
 were ignored. Keyword-to-prompt retries keep VAD enabled; there is no silent fallback that
-removes it. An empty response leaves the draft and selection untouched and shows
-"No speech detected" instead of inserting text.
+removes it. An empty response leaves the draft and selection untouched and explicitly reports
+that the **server returned no transcription text**, rather than claiming no speech was detected.
 
 This is service-side filtering, not local cancellation: audio still reaches Azure, and
 empty responses still report audio usage. No new VAD option is sent to other model branches.
@@ -472,7 +507,10 @@ that empty responses preserve the draft, caret and focus, while normal transcrip
 insert into the composer rather than the terminal. Retry tests cover network/HTTP/JSON failures,
 retaining and resubmitting the same WAV, double clicks, persistent red error details with an
 inline retry, notice timers, composer re-mounting and localization, conversation switches,
-missing composers and safely replacing a pending recording.
+missing composers and safely replacing a pending recording. Audio lifecycle tests exercise
+running, suspended, interrupted and closed contexts, failed/stalled/timed-out resumes, stream
+cleanup, and rebuilding a context after zero samples. Diagnostic tests distinguish client,
+network, HTTP, response-format and explicit empty-result cases, including optional request IDs.
 No microphone, credentials, browser, or live speech-service calls are needed.
 
 `npm run test:retry` starts a loopback HTTP fixture and an isolated headless browser with
@@ -488,6 +526,7 @@ it, making pending/disabled states deterministic. It checks:
 - Byte-identical WAV uploads across attempts, insertion exactly once, no microphone reopened,
   and no writes to the terminal helper textarea.
 - Cleanup after success and the documented loss of page-only audio after a refresh.
+- Distinct client-no-audio and server-empty-text messages, including whether an upload occurred.
 
 The final underlined Retry presentation was also manually accepted in the deployed service;
 that check complements, rather than replaces, the automated regression tests.
