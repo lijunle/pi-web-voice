@@ -360,6 +360,19 @@ tree. Superseded CI runs cancel; live and publish runs serialize separately. CI 
 local fixtures and mock responses, independently of live-provider or publishing setup.
 Use the Actions logs to inspect each job's actual commands and test results.
 
+#### GitHub-hosted validation
+
+[CI run 34249110453](https://github.com/lijunle/pi-web-voice/actions/runs/34249110453)
+validates commit `a5c352f` on Ubuntu 24.04. All five jobs pass: Node 20.0.0/22/24/26
+checks and browser integration. The browser job uses Node 24.20.0 and npm 11.19.0,
+installs pi-web 0.9.0 and managed Chromium, passes 48 server checks plus 8 + 63 + 25
+browser checks, and inspects the runtime package. This provides Linux process-tree and
+browser validation alongside the local macOS record.
+
+E2E and Publish have workflow definitions but no execution in this record. Their
+external environment/publisher setup remains a prerequisite for those operations;
+CI passes independently with no speech keys or npm publication.
+
 #### Configure live E2E
 
 Create the `speech-live` Environment in GitHub repository settings. Restrict deployments
