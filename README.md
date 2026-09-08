@@ -5,6 +5,8 @@ Voice input for [pi-web](https://github.com/agegr/pi-web) through a standalone N
 Click the microphone, wait for the clock, and speak. Your transcript appears at the
 caret in the chat composer: review it, edit it, then send.
 
+![pi-web chat composer with an active microphone and a 0:03 recording timer](https://raw.githubusercontent.com/lijunle/pi-web-voice/main/assets/recording.jpg)
+
 ## Why pi-web-voice
 
 - **Drop-in integration.** Add a hook with zero runtime dependencies to your existing
