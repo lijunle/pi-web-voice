@@ -32,6 +32,8 @@
     "bin",
     "public",
     "README.md",
+    "USAGE.md",
+    "DEVELOPMENT.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
