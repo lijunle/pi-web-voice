@@ -6,148 +6,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-08
+
 ### Added
 
-- A README Live E2E status badge for manually triggered `main` runs, alongside CI,
-  and a linked record of the successful GitHub-hosted Azure OpenAI browser check.
-- GitHub Actions CI for Node 20.0.0/22/24/26 checks and Ubuntu Playwright integration
-  with an explicitly installed pi-web 0.9.0 host; CI uses mock speech without service keys.
-- A manually confirmed live E2E workflow scoped to the `speech-live` environment, and
-  a stable-release npm publishing workflow with version validation, reusable CI,
-  an `npm` environment, OIDC trusted publishing, and provenance. See
-  [GitHub Actions setup](DEVELOPMENT.md#github-actions) for the external configuration.
-- An explicit live `test:e2e` that drives Playwright Chromium through an isolated
-  pi-web host and the configured speech service using a committed synthetic speech
-  fixture. It requires recognizable text, exact draft insertion, resource cleanup,
-  and no chat submission; mock configuration fails rather than masquerading as live E2E.
-- Strict real-pi-web/mock integration assertions for consecutive takes, selected-range
-  insertion, WAV/request metadata, cleanup, observed clock ticks, and recording limits.
-  Negative unit checks reject the former smoke test's false-success conditions.
-- A validated `audio_context=per-take` capture-policy marker in transcription logs,
-  retained through Retry. Missing or unrecognized markers log as `unspecified` so
-  older open pages and direct callers are distinguishable without logging raw input.
-- Regression coverage for fresh contexts across consecutive takes, complete audio-graph
-  teardown, stale callbacks, closing waits/timeouts, cancellation, and log-marker privacy.
-- UTC timestamps, per-request UUIDs returned in `x-pi-voice-request-id`, and explicit
-  provider, VAD, outcome, and upstream-status fields in transcription logs.
-- Manual **Retry** in the persistent error notice, reusing the same recording without
-  reopening the microphone or making parallel uploads.
-- Recovery of cached transcripts when the composer is unavailable or the conversation
-  changes, tied to the session/project captured when recording stops; confirmation
-  before replacing a pending recording.
-- Isolated browser retry coverage and expanded regressions for audio ownership,
-  response failures, composer recovery, and metadata-only request logs.
-- A concise `AGENTS.md` with documentation entry points, implementation/privacy/test
-  principles, and writing rules for positive expression and present-tense prose.
-- Strict TypeScript checking of the CommonJS server and CLI through JSDoc, using
-  development-only TypeScript 6 and Node 20 types with a committed dependency lockfile.
-  `npm run typecheck` checks types; `npm run check` also runs the unit suite. Runtime
-  source remains JavaScript and the compiler emits no build artifacts.
-- Regression coverage for CLI/configuration behavior, HTTP forwarding overloads,
-  provider response containers, unknown exceptions, and session-record guards.
+- Manual **Retry** in a persistent error notice, resubmitting the same WAV without
+  reopening the microphone or making parallel uploads. Cached transcripts support
+  local recovery when the composer is unavailable or the conversation changes.
+  Pending takes remain tied to the session/project captured at Stop, and starting
+  another take asks for confirmation before replacement.
+- UTC transcription timestamps, per-request UUIDs returned in `x-pi-voice-request-id`,
+  and provider, VAD, outcome, and upstream-status fields. A validated
+  `audio_context=per-take` marker survives Retry; older or unrecognized markers log
+  as `unspecified`. See [transcription logs](USAGE.md#transcription-logs).
+- Strict JSDoc type checking for the CommonJS server and CLI using development-only
+  TypeScript 6 and Node 20 types, with a committed dependency lockfile. Runtime
+  JavaScript remains dependency-free and build-free.
+- Expanded unit, server integration, and Playwright browser regressions for recording
+  ownership, response handling, retry, composer isolation, HTTP forwarding, provider
+  contracts, session parsing, and privacy boundaries.
+- GitHub Actions CI for Node 20.0.0/22/24/26 and Ubuntu browser integration with pi-web
+  0.9.0; an opt-in, approval-protected E2E workflow using synthetic speech and a real
+  backend; and automatic npm publishing from new stable `vX.Y.Z` tags after version
+  validation and full CI. Publishing uses a tag-only `npm` environment, OIDC, and
+  provenance, with no human approval. See [CI/CD setup](DEVELOPMENT.md#github-actions).
+- CI and E2E README badges, a recording screenshot, a dedicated [usage guide](USAGE.md),
+  [development guide](DEVELOPMENT.md), and repository guidance in `AGENTS.md`.
 
 ### Changed
 
-- Shorten the workflow and README badge display names to `E2E`, preserving the
-  manual confirmation and speech-service approval requirements.
-- Publish automatically on newly created stable `vX.Y.Z` tags instead of GitHub
-  Release publication, with a tag-only `npm` environment and no human approval or
-  wait timer. Preserve the version/registry checks, full CI gate, and OIDC provenance;
-  skip deleted or moved tags and reject invalid/prerelease versions. Add isolated
-  regression tests for the workflow's release validator.
-- Upgrade all workflow pins to `actions/checkout` v7.0.1 and `actions/setup-node`
-  v7.0.0, retaining full commit SHAs and the existing test, credential, and release gates.
-- Organize tests into `test:unit`, `test:integration`, and opt-in `test:e2e`.
-  `npm test` and `npm run check` now include server and browser integration checks;
-  use Node 22.19+, pi-web on PATH, and `npx playwright install chromium` for the full
-  check. Unit tests and the application retain Node 20 support.
-- Replace `test:retry` and the Edge-specific CDP scripts with Playwright-driven browser
-  integration using locked, development-only Playwright Chromium. Real-pi-web tests
-  own temporary homes/ports, select the initial project through the UI, and preserve
-  personal credentials and installed pi-web files. See [testing](DEVELOPMENT.md#test-commands-and-isolation).
-- Remove cross-take AudioContext reuse: each recording creates a fresh context and
-  closes it on stop, cancellation, or failure instead of suspending it between takes.
-  This provides a lifecycle-isolation trial for reported iOS 26.6.1 home-screen PWA
-  zero-sample failures. On 2026-09-08, the maintainer confirmed normal voice input
-  after deployment; long-term recurrence testing remains open. Each take now pays
-  fresh-context setup latency, included in the existing microphone-opening timing.
-- Retain and disconnect all capture nodes, detach stopped processor handlers, and
-  ignore stale callbacks. A new context waits for preceding closure with a bounded
-  wait; failed cleanup keeps captured audio available and timed-out audio activation
-  releases its microphone. See [audio lifecycle](DEVELOPMENT.md#microphone-context-and-pending-take-lifecycle).
-- Azure OpenAI `gpt-transcribe` requests automatic VAD with `chunking_strategy=auto`,
-  including keyword-to-prompt fallbacks, to address reproduced cases of vocabulary-biased
-  text generated from silence.
-- Microphone capture starts only on click. Cancelled openings remain guarded until
-  cleanup finishes, preventing rapid reactivation from opening a second stream in the
-  same page. Keyboard access and explicit activation remain.
-- `mic opened in …ms` measures accepted activation to audio readiness instead of starting
-  at pointer-down. Retry retains the original recording's timing; each upload still
-  receives its own request ID. See [Transcription logs](USAGE.md#transcription-logs).
-- Retryable error notices persist, keep details visible while retrying, and update
-  without stacking. The underlined Retry action supports keyboard focus and touch;
-  long errors wrap and scroll. Success clears the pending recording and notice.
-- Client capture errors, network failures, HTTP errors, invalid responses, and explicit
-  server-empty transcripts have distinct messages.
-- Browser test commands clear `NODE_OPTIONS` in their child runner to avoid loading a
-  separately installed hook.
-- Documentation is organized into a concise README, [usage guide](USAGE.md),
-  [development guide](DEVELOPMENT.md), and this changelog. Corrected configuration,
-  vocabulary, and startup-log descriptions; clarified stop-time conversation binding,
-  timeout and response-handling boundaries; and recorded the maintainer's iPhone Safari use.
-- Reworded the guides around current behavior and positive actions, including design
-  rationale and validation results. CHANGELOG remains the sole exception for historical
-  and before/after narratives.
+- Each recording creates a fresh AudioContext and closes it on Stop, cancellation, or
+  failure instead of suspending it for reuse. Context-close and activation waits are
+  bounded, and microphone timing includes this setup. This isolates takes while the
+  reported iOS PWA zero-sample issue remains under observation; the maintainer confirms
+  normal input in the [2026-09-08 validation](DEVELOPMENT.md#manual-verification).
+- Microphone acquisition starts only on explicit click/keyboard activation rather than
+  pointer-down. Cancelled openings remain guarded until cleanup finishes. Opening
+  latency measures accepted activation to audio readiness, excluding pointer-hold time.
+- Azure OpenAI `gpt-transcribe` requests automatic VAD with scalar
+  `chunking_strategy=auto`, including keyword-to-prompt fallback, to address
+  vocabulary-biased text generated from silence.
+- Retryable notices persist and update without stacking. Retry uses underlined text
+  with keyboard focus and touch support; long messages wrap and scroll. Capture,
+  network, HTTP, response-format, and successful empty-transcript outcomes have
+  distinct notices.
+- Tests are organized as `test:unit`, `test:integration`, and opt-in `test:e2e`.
+  `npm test` and `npm run check` now include browser integration and require Node
+  22.19+, pi-web on PATH, and managed Playwright Chromium. `test:integration` replaces
+  `test:retry`; `test:e2e` owns its host, calls a real backend, and rejects mock rather
+  than accepting an error notice as a successful round trip. Unit tests retain Node
+  20 support. See [test setup](DEVELOPMENT.md#development-and-testing).
+- Browser suites use locked Playwright Chromium instead of the local Edge installation
+  and custom CDP transport. All test commands clear inherited `NODE_OPTIONS` to exercise
+  the checkout's hook. Workflow actions use pinned checkout v7.0.1 and setup-node v7.0.0.
 
 ### Fixed
 
-- Bound pending browser evaluations and response-body reads in the test harness,
-  redact malformed/read-failure details, and sample the clock after mouse-down to
-  avoid a false-positive clock-crossing check.
-- Supervise suite process groups and temporary homes outside the child process so
-  forced termination and early exit clean up host descendants and credential files.
-  Validate temporary settings before file creation and preserve literal quotes.
-- Require an explicit-run marker for live E2E so native Node test discovery cannot
-  accidentally invoke a speech service. Block early and duplicate live-test uploads
-  before server dispatch, rather than checking the count after potentially billable
-  requests. Add isolated browser and process-lifecycle regressions without additional
-  live speech calls.
-- Require complete, correctly sized, non-silent PCM WAV data in browser round trips
-  so the mock provider cannot hide silent capture or malformed encoding.
-- Keep the development toolchain compatible with Node 20.0.0 by using TypeScript 6's
-  JavaScript CLI, and initialize HTTP fixtures explicitly per test on that test runner.
-- Reject unknown provider names, including inherited object properties, and validate
-  upstream JSON containers before reading fields. Preserve text normalization within
-  valid response objects and ignore malformed session records during vocabulary extraction.
-- Handle ordinary errors, message-bearing objects, and primitive thrown values through
-  shared message/status guards. Contain hostile getters, revoked proxies, and failed
-  string conversion so error reporting still produces a retryable response.
-- Validate binary upload chunks and reject stream-assembly failures through the request
-  promise instead of allowing exceptions to escape asynchronous stream callbacks.
-- Read project metadata from bounded JSONL headers, including long headers and EOF
-  without a newline, instead of interpreting later messages or incomplete tails as metadata.
-  Match complete session IDs rather than accepting a suffix from another session.
-- Preserve split UTF-8 characters throughout HTML injection and search-limit fallback;
-  support byte views and string encodings, and locate insertion points using original
-  string indices so Unicode case folding cannot shift them.
-- Support immutable object/raw-array headers while removing content length from a copy.
-  Pass compressed and explicit non-UTF-8 HTML through unchanged, and propagate native
-  writer errors once rather than retrying a writer that throws.
-- HTML, non-JSON, empty, and malformed responses received by the browser no longer hide
-  HTTP status behind parser exceptions such as Safari's “The string did not match the
-  expected pattern.” The browser explains directly received non-JSON bodies without
-  displaying/logging them; structured JSON error details and valid request IDs remain visible.
-- Valid JSON is accepted with a missing or incorrect Content-Type. Interrupted response
-  reads, empty HTTP 200/204 bodies, and missing/non-string `text` retain the recording
-  for Retry. Explicitly empty transcripts leave the draft untouched without offering Retry.
-- Interrupted or suspended audio contexts are resumed with a bounded wait; closed
-  contexts are replaced. Failed activation releases the microphone, and zero captured
-  samples reset the context for another take. See [Safari troubleshooting](USAGE.md#safari-after-backgrounding-or-switching-tabs).
+- Release all microphone tracks and retained graph nodes, discard stopped contexts,
+  and ignore stale processor callbacks. Interrupted/suspended contexts use bounded
+  activation; failed activation and zero-sample capture clean up for another take.
+  See [Safari troubleshooting](USAGE.md#safari-after-backgrounding-or-switching-tabs).
+- Read browser response text once before parsing JSON, retaining HTTP status and
+  validated request IDs for HTML/plaintext, malformed/empty bodies, and read failures.
+  Valid JSON works despite an incorrect or missing Content-Type. Empty HTTP 200/204
+  bodies and missing/non-string `text` retain audio for Retry; explicit empty text
+  preserves the draft and clears the pending take.
+- Reject unknown provider names, including inherited properties, and validate upstream
+  JSON containers before accessing fields while preserving documented text normalization.
+- Handle primitive exceptions, hostile getters/proxies, and failed string conversion
+  through shared message/status guards. Reject non-binary upload chunks and assembly
+  errors through the request promise rather than escaping stream callbacks.
+- Read project metadata from bounded JSONL headers, including long and EOF-terminated
+  headers, and ignore malformed session records. Match complete session IDs rather
+  than a suffix from another session.
+- Preserve split UTF-8 throughout streamed HTML injection and search-limit fallback;
+  handle byte views, string encodings, and Unicode insertion indices. Copy immutable
+  object/raw-array headers when removing content length, preserve compressed and
+  non-UTF-8 responses, and propagate native writer errors once with their overloads,
+  callbacks, receivers, and return values intact.
+- Bound test-driver evaluations and response-body reads; verify mouse clicks across an
+  observed clock tick and require valid, non-silent PCM uploads and exact insertion.
+  Supervise process groups and private files through timeouts, early exits, and failure.
+  Keep type checking and server fixtures compatible with Node 20.0.0.
 
 ### Security
 
 - Keep upstream error bodies out of transcription service logs, logging status and
   request metadata instead while retaining detailed diagnostics for the requesting client.
+- Require explicit live-test opt-in so native test discovery cannot accidentally call
+  a speech service. Block premature/duplicate live uploads and agent submissions before
+  dispatch; isolate credentials in private temporary configuration and redact test
+  response-read/format diagnostics.
 
 ## [0.1.7] - 2026-09-06
 
@@ -238,7 +187,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Health and vocabulary inspection endpoints, transcription metadata logging, HTTP
   interception tests, and a headless-browser integration suite.
 
-[Unreleased]: https://github.com/lijunle/pi-web-voice/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/lijunle/pi-web-voice/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/lijunle/pi-web-voice/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/lijunle/pi-web-voice/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/lijunle/pi-web-voice/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/lijunle/pi-web-voice/compare/v0.1.4...v0.1.5
