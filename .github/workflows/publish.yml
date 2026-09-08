@@ -1,8 +1,8 @@
 name: Publish
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -17,7 +17,7 @@ defaults:
 
 jobs:
   validate:
-    if: github.repository == 'lijunle/pi-web-voice' && !github.event.release.prerelease
+    if: github.repository == 'lijunle/pi-web-voice' && github.event.created && !github.event.deleted
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -31,7 +31,7 @@ jobs:
           package-manager-cache: false
       - name: Validate stable tag, lockfile, repository, and unused npm version
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           node <<'NODE'
           const assert = require('node:assert/strict');
@@ -39,7 +39,7 @@ jobs:
             const pkg = require('./package.json');
             const lock = require('./package-lock.json');
             assert.equal(pkg.name, 'pi-web-voice');
-            assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+            assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, 'use a stable semantic version');
             assert.equal(process.env.RELEASE_TAG, `v${pkg.version}`, 'release tag must match package.json');
             assert.equal(lock.version, pkg.version, 'lockfile version must match');
             assert.equal(lock.packages[''].version, pkg.version, 'lockfile root version must match');
@@ -66,6 +66,7 @@ jobs:
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # This environment restricts deployments to v* tags; configure no reviewers or wait timer.
     environment: npm
     permissions:
       contents: read

@@ -346,7 +346,7 @@ The repository has three workflows with separate credentials and triggers:
 | --- | --- | --- | --- |
 | [CI](https://github.com/lijunle/pi-web-voice/actions/workflows/ci.yml) | Push to `main`, pull request, manual run, or reusable call | Node 20.0.0/22/24/26 type/unit/server checks; Node 24 browser integration; package inspection | Read-only repository token; mock speech |
 | [E2E](https://github.com/lijunle/pi-web-voice/actions/workflows/e2e.yml) | Manual run on `main` with `confirm_live` selected | One real speech/browser round trip | `speech-live` Environment |
-| [Publish](https://github.com/lijunle/pi-web-voice/actions/workflows/publish.yml) | A published, stable GitHub Release | Validate tag/version, run reusable CI, publish npm with provenance | `npm` Environment and OIDC |
+| [Publish](https://github.com/lijunle/pi-web-voice/actions/workflows/publish.yml) | Newly created `v*` tag push; stable `vX.Y.Z` required | Validate tag/version, run reusable CI, publish npm with provenance automatically | Tag-only `npm` Environment, no approval, and OIDC |
 
 CI uses Ubuntu 24.04. It installs `@agegr/pi-web@0.9.0` explicitly for browser checks;
 that package supplies its own pi coding agent dependency. Playwright installs its locked
@@ -378,9 +378,11 @@ recognition, exactly-once draft insertion, terminal isolation, and audio cleanup
 The README's Live E2E badge reports the latest manual `main` run, independently of the
 per-commit CI checks.
 
-Publish has a workflow definition but no execution in this record. Its `npm` environment
-and trusted publisher configuration are separate release prerequisites. CI passes
-independently with no speech keys or npm publication.
+Publish has no execution in this record. Its tag/version and registry guards have
+isolated unit coverage using mock registry responses. The `npm` environment restricts
+deployments to `v*` tags with no required reviewers or wait timer; actual publication
+still requires npm trusted publisher configuration. CI passes independently with no
+speech keys or npm publication.
 
 #### Configure live E2E
 
@@ -412,9 +414,13 @@ the speech job; treat that as an unexecuted test, not live validation.
 
 #### Configure npm publishing
 
-Create an `npm` Environment with release approval and deployment rules for release tags
-such as `v*`. Protect release-tag creation for maintainers. In the `pi-web-voice` package's
-npm settings, add a [GitHub Actions trusted publisher](https://docs.npmjs.com/trusted-publishers/):
+Use an `npm` Environment with **Selected branches and tags** and a **Tag** rule of
+`v*`. Keep **Required reviewers** and **Wait timer** disabled so publication proceeds
+automatically after CI; keep administrator bypass disabled. Creating a version tag is
+the maintainer's release authorization, so limit tag-writing access to trusted maintainers.
+This publishing policy is separate from the approval-protected `speech-live` environment.
+In the `pi-web-voice` package's npm settings, add a
+[GitHub Actions trusted publisher](https://docs.npmjs.com/trusted-publishers/):
 
 - Organization/user: `lijunle`
 - Repository: `pi-web-voice`
@@ -427,21 +433,26 @@ It obtains short-lived publishing credentials through OIDC; keep a long-lived np
 out of GitHub Secrets. Dependency installation and publication use `--ignore-scripts`,
 and the compiler has no build output to publish.
 
-For a release:
+For a release, use a stable package version such as `0.2.0` and the matching tag
+`v0.2.0`:
 
-1. Select an unused stable version. Update `package.json`, `package-lock.json`, and the
-   dated changelog entry; use `npm version patch --no-git-tag-version` for a patch bump.
-2. Run `npm run check`, review `npm pack --dry-run --ignore-scripts`, and commit the
-   release preparation.
-3. Tag the reviewed commit as `v<package.json version>` and push the commit and tag.
-4. Publish a non-prerelease GitHub Release for that tag, then approve the `npm`
-   environment deployment as configured.
+1. Select an unused version. Update `package.json` and `package-lock.json` with
+   `npm version 0.2.0 --no-git-tag-version`, and prepare its dated changelog entry.
+2. Run `npm run check`, inspect `npm pack --dry-run --ignore-scripts`, and commit the
+   release preparation. The tagged commit includes the tag-triggered workflow.
+3. Push the commit to `main`, create its tag with `git tag v0.2.0`, and push only that
+   new tag with `git push origin v0.2.0`.
+4. Observe **Actions → Publish**. It validates the version, runs the complete reusable
+   CI, then publishes the tagged commit to npm with provenance. Publishing is automatic;
+   a GitHub Release and a deployment approval are not required.
 
-The workflow verifies package/lockfile versions, repository identity, and that the
-version is absent from npm, then runs the complete reusable CI before publishing the
-release commit. Drafts, prereleases, ordinary pushes, and live E2E do not publish a
-package. Use a new version for each npm publication; `0.1.7` already exists in the registry.
-Live speech credentials and E2E success are separate from this publishing gate.
+The workflow reads the tag from `github.ref_name`, verifies package/lockfile versions
+and repository identity, and confirms that the version is absent from npm. It rejects
+prerelease/build-metadata versions, malformed stable versions, and mismatched tags.
+Deleted or moved tags are skipped; branch pushes run ordinary CI only. Keep published
+tags immutable and use a new version for each publication; `0.1.7` already exists in
+the registry. Optional GitHub Releases can supply release notes. Live speech credentials
+and E2E success are separate from this publishing gate.
 
 ### Automated coverage
 

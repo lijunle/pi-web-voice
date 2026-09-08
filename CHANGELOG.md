@@ -48,6 +48,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Publish automatically on newly created stable `vX.Y.Z` tags instead of GitHub
+  Release publication, with a tag-only `npm` environment and no human approval or
+  wait timer. Preserve the version/registry checks, full CI gate, and OIDC provenance;
+  skip deleted or moved tags and reject invalid/prerelease versions. Add isolated
+  regression tests for the workflow's release validator.
 - Upgrade all workflow pins to `actions/checkout` v7.0.1 and `actions/setup-node`
   v7.0.0, retaining full commit SHAs and the existing test, credential, and release gates.
 - Organize tests into `test:unit`, `test:integration`, and opt-in `test:e2e`.
