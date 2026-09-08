@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A README Live E2E status badge for manually triggered `main` runs, alongside CI,
+  and a linked record of the successful GitHub-hosted Azure OpenAI browser check.
 - GitHub Actions CI for Node 20.0.0/22/24/26 checks and Ubuntu Playwright integration
   with an explicitly installed pi-web 0.9.0 host; CI uses mock speech without service keys.
 - A manually confirmed live E2E workflow scoped to the `speech-live` environment, and

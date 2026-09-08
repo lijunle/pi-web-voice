@@ -370,9 +370,17 @@ installs pi-web 0.9.0 and managed Chromium, passes 48 server checks plus 8 + 63 
 browser checks, and inspects the runtime package. This provides Linux process-tree and
 browser validation alongside the local macOS record.
 
-E2E and Publish have workflow definitions but no execution in this record. Their
-external environment/publisher setup remains a prerequisite for those operations;
-CI passes independently with no speech keys or npm publication.
+[E2E run 34260574927, attempt 2](https://github.com/lijunle/pi-web-voice/actions/runs/34260574927/attempts/2)
+validates commit `bb1d9de` through the protected `speech-live` environment on Ubuntu.
+Azure OpenAI `gpt-transcribe` returns 72 characters from 5.0 seconds of synthetic audio,
+with automatic VAD and 1.3 seconds of route time. The full browser check passes speech
+recognition, exactly-once draft insertion, terminal isolation, and audio cleanup.
+The README's Live E2E badge reports the latest manual `main` run, independently of the
+per-commit CI checks.
+
+Publish has a workflow definition but no execution in this record. Its `npm` environment
+and trusted publisher configuration are separate release prerequisites. CI passes
+independently with no speech keys or npm publication.
 
 #### Configure live E2E
 
