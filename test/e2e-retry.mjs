@@ -132,6 +132,7 @@ try {
   profile = mkdtempSync(join(tmpdir(), "pi-web-voice-retry-"));
   browser = spawn(process.env.BROWSER || "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", [
     "--headless=new", "--disable-gpu", "--disable-background-networking", "--no-first-run",
+    "--autoplay-policy=no-user-gesture-required", // synthetic Web Audio input, never a device microphone
     "--remote-debugging-port=0", `--user-data-dir=${profile}`, origin,
   ], { stdio: "ignore" });
   let startupError;
@@ -162,9 +163,9 @@ try {
     return result.value;
   };
   const idle = () => waitFor(() => evaluate('window.__piWebVoice.ui.state === "idle"'), "idle UI");
-  const click = async () => {
+  const click = async (target = "retryButton") => {
     const point = await evaluate(`(() => {
-      const r=window.__piWebVoice.ui.retryButton.getBoundingClientRect();
+      const r=window.__piWebVoice.ui[${JSON.stringify(target)}].getBoundingClientRect();
       return {x:r.x+r.width/2,y:r.y+r.height/2};
     })()`);
     await cdp.send("Input.dispatchMouseEvent", { ...point, type: "mousePressed", button: "left", buttons: 1, clickCount: 1 });
@@ -172,11 +173,55 @@ try {
   };
 
   for (const [language, width, height] of [["en", 900, 700], ["zh-CN", 320, 568]]) {
-    const start = uploads.length;
+    const captureUpload = uploads.length + 1;
     const label = language === "en" ? "Retry" : "重试";
     await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 400 });
     await cdp.send("Page.navigate", { url: `${origin}/?language=${language}` });
     await waitFor(() => evaluate('!!window.__piWebVoice?.ui.button?.isConnected'), "mounted microphone");
+
+    // Exercise click-only ownership with real Web Audio streams, but never
+    // access a device. Hold getUserMedia completion to reproduce the old race.
+    await evaluate(`(() => {
+      window.__guardMic=navigator.mediaDevices.getUserMedia;
+      window.__openingRequests=[]; window.__sources=[]; window.__peakLive=0;
+      navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{
+        window.__openingRequests.push(()=>{
+          const context=new AudioContext(), oscillator=context.createOscillator();
+          const destination=context.createMediaStreamDestination();
+          oscillator.connect(destination); oscillator.start();
+          window.__sources.push({context,oscillator,stream:destination.stream});
+          const live=window.__sources.flatMap(s=>s.stream.getTracks()).filter(t=>t.readyState==='live').length;
+          window.__peakLive=Math.max(window.__peakLive,live);
+          resolve(destination.stream);
+        });
+      });
+      window.__piWebVoice.ui.button.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+    })()`);
+    await sleep(1600);
+    check(`${language}: a pointer hold never requests microphone access`, await evaluate('window.__openingRequests.length===0 && window.__piWebVoice.ui.state==="idle"'));
+    await click("button"); // begin an opening
+    await click("button"); // cancel it
+    for (let i = 0; i < 3; i += 1) await click("button");
+    check(`${language}: repeated start-cancel-start keeps just one pending opening`, await evaluate('window.__openingRequests.length===1 && window.__piWebVoice.ui.arming && window.__piWebVoice.ui.state==="idle" && window.__piWebVoice.ui.button.disabled && window.__piWebVoice.ui.button.getAttribute("aria-busy")==="true"'));
+    await evaluate('window.__openingRequests[0]()');
+    await waitFor(() => evaluate('!window.__piWebVoice.ui.arming'), "cancelled opening cleanup");
+    check(`${language}: a cancelled late stream is closed without uploading`, uploads.length === captureUpload - 1 && await evaluate('window.__sources[0].stream.getTracks().every(t=>t.readyState==="ended") && !window.__piWebVoice.recorder.active && !window.__piWebVoice.recorder.stream'));
+
+    await click("button"); // now a new recording is allowed
+    await evaluate('window.__openingRequests[1]()');
+    await waitFor(() => evaluate('window.__piWebVoice.recorder.active && window.__piWebVoice.recorder.chunks.length>0'), "real synthetic samples");
+    check(`${language}: the next click captures audio with only one live stream`, await evaluate('window.__openingRequests.length===2 && window.__peakLive===1'));
+    await click("button");
+    await respond(captureUpload, 200, { text: "" });
+    await idle();
+    check(`${language}: stopping releases the stream and uploads captured audio`, uploads[captureUpload - 1].length > 44 && await evaluate('window.__sources.every(s=>s.stream.getTracks().every(t=>t.readyState==="ended")) && !window.__piWebVoice.recorder.stream'));
+    await evaluate(`(async () => {
+      for(const s of window.__sources){s.oscillator.stop(); await s.context.close();}
+      window.__piWebVoice.recorder.discardContext(); window.__piWebVoice.ui.clearToast();
+      navigator.mediaDevices.getUserMedia=window.__guardMic;
+    })()`);
+
+    const start = uploads.length;
     await evaluate(`(() => {
       const area=window.__piWebVoice.findComposer();
       area.focus(); area.setSelectionRange(area.value.length,area.value.length);
@@ -244,7 +289,7 @@ try {
         && ui.pending===null && ui.toastElement===null && ui.retryButton===null;
     })()`));
     check(`${language}: every attempt uploads identical WAV bytes`, uploads[start].length === 96044 && uploads.slice(start, start + 3).every(bytes => bytes.equals(uploads[start])));
-    check(`${language}: no microphone opened and no terminal text touched`, await evaluate('window.__micOpens===0 && document.querySelector(".xterm-helper-textarea").value==="Leave the terminal alone"'));
+    check(`${language}: retry leaves the microphone closed and terminal text untouched`, await evaluate('window.__micOpens===0 && !window.__piWebVoice.recorder.stream && document.querySelector(".xterm-helper-textarea").value==="Leave the terminal alone"'));
 
     const localMessage = await evaluate(`(async () => {
       const {ui,recorder}=window.__piWebVoice;

@@ -7,7 +7,7 @@ import vm from "node:vm";
 const source = readFileSync(new URL("../public/inject.js", import.meta.url), "utf8");
 const SERVER_EMPTY = "[Server · empty transcript] Audio was submitted, but the server returned no transcription text (HTTP 200)";
 
-function harness(text, { language = "en" } = {}) {
+function harness(text, { language = "en", now = Date.now } = {}) {
   class Textarea {
     constructor(value, terminal = false) {
       this._value = value;
@@ -52,7 +52,8 @@ function harness(text, { language = "en" } = {}) {
     navigator,
     document,
     MutationObserver: class { observe() {} },
-    Blob, Event, URLSearchParams, setTimeout: schedule, clearTimeout: id => timers.delete(id),
+    Blob, Event, URLSearchParams, Date: class extends Date { static now() { return now(); } },
+    setTimeout: schedule, clearTimeout: id => timers.delete(id),
     setInterval, clearInterval,
   });
   const { ui, recorder } = window.__piWebVoice;
@@ -434,7 +435,7 @@ for (const [language, label] of [["en", "Retry"], ["zh-CN", "重试"]]) {
     assert.equal(toolbar.children.length, 2, "only the microphone and original attach button");
     assert.equal(h.document.head.children.length, 1, "styles mounted once");
 
-    h.recorder.warm = () => assert.fail("retry and a pending take must not warm the mic");
+    h.navigator.mediaDevices = { getUserMedia: () => assert.fail("retry and pointer events must not open the mic") };
     h.ui.button.dispatchEvent(new Event("pointerdown"));
     retry.dispatchEvent(new Event("pointerdown"));
     const down = new Event("mousedown", { cancelable: true });
@@ -579,8 +580,8 @@ test("starting over requires confirmation and a working microphone before discar
   assert.equal(h.ui.toastElement, null);
 });
 
-function audioHarness(state = "running", resumeMode = "resolve") {
-  const h = harness("");
+function audioHarness(state = "running", resumeMode = "resolve", options = {}) {
+  const h = harness("", options);
   const contexts = [], tracks = [];
   h.window.AudioContext = class {
     constructor() {
@@ -654,18 +655,151 @@ for (const mode of ["reject", "stalled", "pending"]) {
   });
 }
 
-test("a warmed microphone context is checked again if Safari interrupts it before the click", async t => {
-  const h = audioHarness("running");
+test("pointer presses, long holds and abandoned touches never open the microphone", async () => {
+  const h = audioHarness("missing");
+  mountToolbar(h);
+  for (const type of ["pointerdown", "mousedown", "pointerleave", "pointercancel", "pointerup", "mouseup"]) {
+    h.ui.button.dispatchEvent(new Event(type));
+    h.advanceTime(2000);
+  }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.tracks.length, 0);
+  assert.equal(h.contexts.length, 0);
+  assert.equal(h.timers.size, 0, "no pre-warm expiry timer");
+  assert.equal(h.ui.state, "idle");
+  assert.equal(h.ui.arming, false);
+  assert.equal(h.requests.length, 0);
+  assert.equal("warming" in h.recorder, false);
+  assert.equal("warm" in h.recorder, false);
+});
+
+test("click-only startup still resumes an interrupted context", async t => {
+  const h = audioHarness("interrupted");
+  mountToolbar(h);
   t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
-  h.recorder.warming = h.recorder.open();
-  await h.recorder.warming;
-  h.recorder.context.state = "interrupted";
-  await h.ui.start();
+  h.ui.button.dispatchEvent(new Event("pointerdown"));
+  assert.equal(h.tracks.length, 0);
+  assert.equal(h.recorder.context.resumes, 0);
+  h.ui.button.dispatchEvent(new Event("click"));
+  assert.equal(h.ui.arming, true);
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.recorder.context.state, "running");
   assert.equal(h.recorder.context.resumes, 1);
-  assert.equal(h.tracks.length, 1, "the warmed stream is reused");
+  assert.equal(h.tracks.length, 1);
   assert.equal(h.recorder.active, true);
   assert.deepEqual(h.notices, []);
+});
+
+function delayedMicrophone(h) {
+  const openings = [];
+  let peakLive = 0;
+  h.navigator.mediaDevices.getUserMedia = () => {
+    const opening = deferred();
+    openings.push({
+      reject: opening.reject,
+      resolve() {
+        const track = { readyState: "live", stop() { this.readyState = "ended"; } };
+        h.tracks.push(track);
+        peakLive = Math.max(peakLive, h.tracks.filter(track => track.readyState === "live").length);
+        opening.resolve({ getTracks: () => [track] });
+      },
+    });
+    return opening.promise;
+  };
+  return { openings, get peakLive() { return peakLive; } };
+}
+
+for (const stage of ["microphone", "audio resume"]) {
+  for (const outcome of ["resolve", "reject"]) {
+    test(`start-cancel-start during ${stage} (${outcome}) never opens a second stream`, async t => {
+      const h = audioHarness(stage === "audio resume" ? "interrupted" : "missing");
+      mountToolbar(h);
+      const mic = delayedMicrophone(h);
+      const activation = deferred();
+      if (stage === "audio resume") {
+        h.recorder.context.resume = async function () { await activation.promise; this.state = "running"; };
+      }
+      t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
+      const press = () => {
+        h.ui.button.dispatchEvent(new Event("pointerdown"));
+        h.ui.button.dispatchEvent(new Event("click"));
+      };
+      press();
+      assert.equal(mic.openings.length, 1);
+      assert.equal(h.ui.button.disabled, false, "opening can still be cancelled with a click");
+      if (stage === "audio resume") { mic.openings[0].resolve(); await new Promise(resolve => setImmediate(resolve)); }
+      press(); // cancel the pending opening
+      assert.equal(h.ui.state, "idle");
+      assert.equal(h.ui.arming, true, "keep the opening lock until cleanup has finished");
+      assert.equal(h.ui.button.disabled, true);
+      assert.equal(h.ui.button.attributes["aria-busy"], "true");
+      assert.match(h.ui.button.title, /Cancelling microphone request/);
+      h.advanceTime(1600); // past the former warm timeout
+      for (let i = 0; i < 5; i += 1) press();
+      h.ui.toggle(); // shortcut/headphone entry point uses the same lock
+      await h.ui.start();
+      assert.equal(mic.openings.length, 1);
+      assert.equal(h.ui.arming, true);
+
+      const waiting = stage === "microphone" ? mic.openings[0] : activation;
+      if (outcome === "resolve") waiting.resolve();
+      else waiting.reject(new Error("Late opening failure"));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.ui.state, "idle");
+      assert.equal(h.ui.arming, false);
+      assert.equal(h.ui.button.disabled, false);
+      assert.equal(h.ui.button.attributes["aria-busy"], "false");
+      assert.equal(h.recorder.active, false);
+      assert.equal(h.recorder.stream, null);
+      assert.ok(h.tracks.every(track => track.readyState === "ended"));
+      assert.equal(h.requests.length, 0, "cancelled openings never upload audio");
+      assert.deepEqual(h.notices, []);
+
+      press(); // a genuinely new activation is now allowed
+      assert.equal(mic.openings.length, 2);
+      mic.openings[1].resolve();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.recorder.active, true);
+      h.recorder.chunks = [new Float32Array(128)];
+      await h.ui.stop();
+      assert.equal(h.requests.length, 1);
+      assert.ok(h.tracks.every(track => track.readyState === "ended"));
+      assert.equal(mic.peakLive, 1, "at most one live mic stream throughout the interaction");
+    });
+  }
+}
+
+test("microphone failure does not silently open a second stream as a fallback", async () => {
+  const h = audioHarness("missing");
+  mountToolbar(h);
+  let calls = 0;
+  h.navigator.mediaDevices.getUserMedia = async () => { calls += 1; throw new Error("Microphone unavailable"); };
+  h.ui.button.dispatchEvent(new Event("pointerdown"));
+  h.ui.button.dispatchEvent(new Event("click"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.equal(h.ui.arming, false);
+  assert.match(h.notices[0], /^\[Client · microphone\]/);
+  assert.equal(h.requests.length, 0);
+});
+
+test("microphone wait metadata measures click-to-ready, excluding the pointer hold", async t => {
+  let now = 0;
+  const h = audioHarness("missing", "resolve", { now: () => now });
+  mountToolbar(h);
+  const mic = delayedMicrophone(h);
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
+  h.ui.button.dispatchEvent(new Event("pointerdown"));
+  now = 800;
+  assert.equal(mic.openings.length, 0);
+  h.ui.button.dispatchEvent(new Event("click"));
+  now = 2000;
+  mic.openings[0].resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.ui.waitedMs, 1200);
+  h.recorder.chunks = [new Float32Array(128)];
+  await h.ui.stop();
+  assert.equal(h.requests[0].url, "/__voice/transcribe?wait=1200");
 });
 
 test("zero samples report the pre-stop audio state and rebuild the context for the next take", async t => {

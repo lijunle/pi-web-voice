@@ -21,10 +21,6 @@
   // transcription at 16 kHz mono PCM (about 19.2 MB), while still putting a
   // finite bound on an accidentally abandoned recording.
   const MAX_SECONDS = 10 * 60;
-  // How long a microphone opened at finger-down stays open unclaimed. A press
-  // claims it milliseconds later; anything longer was a finger that slid off
-  // the button, or a hold long enough that it can pay for its own stream.
-  const WARM_MS = 1500;
   // Safari can leave resume() pending after an interruption. Do not leave the
   // user stuck at "opening" with an owned microphone indefinitely.
   const AUDIO_RESUME_MS = 3000;
@@ -99,6 +95,7 @@
     ? {
         idle: "语音输入 — 点击开始，再点一次结束",
         opening: "正在打开麦克风 — 数字出现后再说话",
+        cancelling: "正在取消麦克风请求，请稍候",
         recording: "正在录音 — 点击停止",
         working: "转写中…",
         insecure: "浏览器只在 HTTPS 或 localhost 下允许使用麦克风",
@@ -121,6 +118,7 @@
     : {
         idle: "Voice input — click to start, click again to stop",
         opening: "Opening the microphone — speak once the clock appears",
+        cancelling: "Cancelling microphone request — please wait",
         recording: "Recording — click to stop",
         working: "Transcribing…",
         insecure: "Microphone needs HTTPS or localhost",
@@ -207,14 +205,13 @@
     stream: null,
     // Reused between healthy takes; failed/empty capture discards it.
     // Constructing one makes the OS open an audio session; resuming a
-    // suspended one does not, so later takes normally reach samples sooner. The microphone stream is not kept — that is what lights
-    // the recording indicator, and it is released on every stop.
+    // suspended one does not, so later takes normally reach samples sooner.
+    // The microphone stream is not kept — it lights the recording indicator
+    // and is released on every stop.
     context: null,
     node: null,
     chunks: [],
     startedAt: 0,
-    // A microphone opened at finger-down, waiting for the press to claim it.
-    warming: null,
 
     discardContext() {
       const context = this.context;
@@ -263,35 +260,10 @@
       }
     },
 
-    /**
-     * Asks for the microphone at finger-down, so the press only has to claim
-     * it. `click` still decides whether anything is recorded, which is what
-     * keeps the keyboard, VoiceOver and the accessibility API working — they
-     * simply pay the whole wait.
-     *
-     * The recording indicator therefore lights on the press rather than on the
-     * decision, and a finger that slides off the button never claims what it
-     * opened. An unclaimed stream is dropped rather than left listening.
-     */
-    warm() {
-      if (this.active || this.warming) return;
-      const opening = this.open().catch(() => null); // start() reports the failure
-      this.warming = opening;
-      setTimeout(() => {
-        if (this.warming !== opening) return; // a press claimed it
-        this.warming = null;
-        opening.then((stream) => stream?.getTracks().forEach((track) => track.stop()));
-      }, WARM_MS);
-    },
-
     async start() {
-      // Whatever finger-down opened, or a fresh one when the press came from a
-      // keyboard, a headphone squeeze, or a warm stream that timed out.
-      const warmed = this.warming;
-      this.warming = null;
-      this.stream = (warmed && (await warmed)) || (await this.open());
-      // A warmed context may have been interrupted before the click claimed it.
-      if (this.context.state !== "running") await this.resumeContext();
+      // One explicit activation, one microphone request. ui.arming serializes
+      // opening/cancellation; there is no speculative stream to claim or retry.
+      this.stream = await this.open();
 
       const source = this.context.createMediaStreamSource(this.stream);
       // ScriptProcessor is deprecated but is the only node supported by every
@@ -438,13 +410,11 @@
     // is page memory only: retries neither reopen the mic nor write to disk.
     pending: null,
     timer: null,
-    // True from the press until the microphone actually opens. The button is
-    // already red during that window, so the state alone cannot say whether
-    // there is a stream to stop.
+    // Held until microphone opening settles, even after a cancelling click.
+    // getUserMedia cannot be aborted: late streams are closed before another
+    // activation can open one. This is a per-page guard, not a cross-tab lock.
     arming: false,
-    // When the finger went down, if it was a finger.
-    pressedAt: 0,
-    // How long the last press waited for the microphone, in milliseconds.
+    // How long the last activation waited for the microphone, in milliseconds.
     waitedMs: 0,
 
     findAnchor() {
@@ -502,16 +472,6 @@
       // them produce pointer events.
       button.addEventListener("click", () => this.toggle());
 
-      // Finger-down only opens the microphone; the click above still decides
-      // what to do with it. The default is deliberately left alone here, since
-      // preventing it would take the click with it.
-      button.addEventListener("pointerdown", () => {
-        // A pending take needs confirmation before opening another microphone.
-        if (this.state !== "idle" || this.pending) return;
-        this.pressedAt = Date.now();
-        recorder.warm();
-      });
-
       // A button steals focus from the composer on mousedown. Refusing that
       // default keeps the caret where it was, and on a phone keeps the
       // on-screen keyboard from collapsing under the composer.
@@ -526,7 +486,8 @@
       this.renderToast();
       if (!this.button) return;
 
-      const spinning = this.state === "working";
+      const cancelling = this.state === "idle" && this.arming;
+      const spinning = this.state === "working" || cancelling;
       const recording = this.state === "recording";
       // Red says the press landed; the pulse and the clock say the microphone
       // is actually open. Both change at the same instant, so there is one
@@ -539,15 +500,18 @@
           ? "var(--accent)"
           : "var(--text-muted)";
       this.button.style.background = recording ? "rgba(229,83,75,.12)" : "";
-      this.button.title = live
-        ? T.recording
-        : recording
-          ? T.opening
-          : spinning
-            ? T.working
-            : T.idle;
+      this.button.disabled = cancelling;
+      this.button.title = cancelling
+        ? T.cancelling
+        : live
+          ? T.recording
+          : recording
+            ? T.opening
+            : spinning
+              ? T.working
+              : T.idle;
       this.button.setAttribute("aria-label", this.button.title);
-      this.button.setAttribute("aria-busy", spinning ? "true" : "false");
+      this.button.setAttribute("aria-busy", spinning || this.arming ? "true" : "false");
 
       // Only change properties of the mounted children. In particular, the
       // clock updates must not replace the span or SVG under a mouse press.
@@ -639,10 +603,9 @@
     async start() {
       if (this.state !== "idle" || this.arming) return;
       if (this.pending && !window.confirm(T.replaceRecording)) return;
-      // Timed from finger-down when there was one: that is when the microphone
-      // was asked for, and when the user started waiting. A stale press with no
-      // click behind it is ignored.
-      const pressedAt = Date.now() - this.pressedAt < WARM_MS ? this.pressedAt : Date.now();
+      // Measure the click/keyboard activation, not time spent holding a pointer
+      // before it. All input methods use this same opening path.
+      const requestedAt = Date.now();
       this.state = "recording";
       this.arming = true;
       this.render("…");
@@ -678,7 +641,7 @@
 
       // Reported with the audio so the server log can show what the wait
       // actually costs on this device, rather than what it is assumed to cost.
-      this.waitedMs = recorder.startedAt - pressedAt;
+      this.waitedMs = recorder.startedAt - requestedAt;
 
       // Count time since the stream/graph opened, excluding microphone wait.
       // The clock is a readiness cue, not a sample-delivery monitor.

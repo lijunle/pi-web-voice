@@ -187,8 +187,11 @@ try {
   // inside the same expression as the click proves nothing was awaited first.
   const paintedAtOnce = await evaluate(`(() => {
     const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-    navigator.mediaDevices.getUserMedia = (constraints) =>
-      new Promise((resolve) => setTimeout(() => resolve(real(constraints)), 1200));
+    window.__openingCalls = 0;
+    navigator.mediaDevices.getUserMedia = (constraints) => {
+      window.__openingCalls++;
+      return new Promise((resolve) => setTimeout(() => resolve(real(constraints)), 1200));
+    };
     document.getElementById("pi-web-voice-button").click();
     return [window.__piWebVoice.ui.state, document.getElementById("pi-web-voice-button").textContent].join(",");
   })()`);
@@ -214,31 +217,36 @@ try {
   // Pressing again during that wait has to cancel cleanly: no empty clip sent,
   // and no microphone left open once the stream nobody wants arrives.
   const cancelled = await evaluate(`(() => {
-    document.getElementById("pi-web-voice-button").click();
-    document.getElementById("pi-web-voice-button").click();
-    return window.__piWebVoice.ui.state;
+    const button = document.getElementById("pi-web-voice-button");
+    const before = window.__openingCalls;
+    button.click();
+    button.click();
+    for (let i = 0; i < 5; i++) {
+      button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      button.click();
+    }
+    return { state: window.__piWebVoice.ui.state, requests: window.__openingCalls - before };
   })()`);
-  check("press during the wait cancels", cancelled === "idle", `state=${cancelled}`);
+  check("press during the wait cancels", cancelled.state === "idle", `state=${cancelled.state}`);
+  check("rapid start-cancel-start opens only one microphone", cancelled.requests === 1, `requests=${cancelled.requests}`);
   await sleep(2000);
   const settled = await evaluate(
     `[window.__piWebVoice.ui.state, window.__piWebVoice.recorder.active, !!window.__piWebVoice.recorder.stream].join(",")`,
   );
   check("orphan stream closed", settled === "idle,false,false", settled);
 
-  // Finger-down opens the microphone so the press only has to claim it. This
-  // is a head start, not a second gesture: the click still decides.
-  const claimed = await evaluate(`(() => {
-    const button = document.getElementById("pi-web-voice-button");
-    button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-    const warmed = String(!!window.__piWebVoice.recorder.warming);
-    button.click();
-    return [warmed, String(window.__piWebVoice.recorder.warming)].join(",");
-  })()`);
-  check("finger-down warms, the press claims", claimed === "true,null", claimed);
-
+  // Holding a pointer, even past the old pre-warm timeout, must do nothing.
+  const beforePress = await evaluate(`window.__openingCalls`);
+  await evaluate(`document.getElementById("pi-web-voice-button")
+    .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }))`);
   await sleep(1800);
-  const recordingWarm = await evaluate(`window.__piWebVoice.recorder.active`);
-  check("the warmed stream is the one recorded", recordingWarm === true, `active=${recordingWarm}`);
+  const held = await evaluate(`({ calls: window.__openingCalls, state: window.__piWebVoice.ui.state })`);
+  check("holding the pointer does not open the microphone", held.calls === beforePress && held.state === "idle");
+
+  await evaluate(`document.getElementById("pi-web-voice-button").click()`);
+  await sleep(1800);
+  const recordingClick = await evaluate(`window.__piWebVoice.recorder.active && window.__openingCalls`);
+  check("the click opens exactly one microphone", recordingClick === beforePress + 1);
 
   // Use a real mouse sequence and hold it across at least one clock tick.
   // Replacing the SVG/span on every tick used to detach the mousedown target,
@@ -290,21 +298,17 @@ try {
     await sleep(250);
   }
 
-  // A finger that slides off the button never presses it. What it opened must
-  // not be left listening.
+  // Sliding off without a click never opens anything in the first place.
+  const beforeSlide = await evaluate(`window.__openingCalls`);
   await evaluate(`(() => {
-    document.getElementById("pi-web-voice-button")
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-    window.__unclaimed = window.__piWebVoice.recorder.warming;
-    return true;
+    const button = document.getElementById("pi-web-voice-button");
+    for (const type of ["pointerdown", "pointerleave", "pointercancel"]) {
+      button.dispatchEvent(new PointerEvent(type, { bubbles: true }));
+    }
   })()`);
-  await sleep(3200); // the stubbed getUserMedia takes 1.2s, the warm stream lives 1.5s
-  const dropped = await evaluate(`(async () => {
-    const stream = await window.__unclaimed;
-    const live = stream.getTracks().filter((track) => track.readyState === "live").length;
-    return [String(window.__piWebVoice.recorder.warming), live].join(",");
-  })()`);
-  check("unclaimed microphone dropped", dropped === "null,0", dropped);
+  await sleep(1800);
+  const untouched = await evaluate(`window.__openingCalls === ${beforeSlide} && !window.__piWebVoice.recorder.stream`);
+  check("abandoned pointer gesture never opens a microphone", untouched);
 
   // Headless browsers have no audio input device, so feed the recorder a
   // synthetic stream instead. Everything after capture is the real code path:

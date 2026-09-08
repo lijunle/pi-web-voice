@@ -126,16 +126,22 @@ samples arriving; those failures are reported separately below.
 The wait is real, so it is measured rather than guessed. Each [transcription log](#transcription-logs)
 includes `mic opened in 340ms` when the browser reports that measurement.
 
-Two things keep that number down. A healthy audio context is reused and suspended between
-takes, so the OS usually opens an audio session once rather than once per recording — the
-first take after a page load is the slow one. And the microphone is asked
-for at finger-down rather than at the click, so a tap spends its own press time opening
-it; the click still decides whether anything is recorded, which is why the keyboard and
-VoiceOver keep working, at the cost of paying the whole wait.
+### Click-only microphone lifecycle
 
-Asking at finger-down means the recording indicator lights on the press rather than on
-the decision. A finger that slides off the button therefore opens a microphone nobody
-claims — it is dropped a second and a half later, having recorded nothing.
+The microphone button opens audio only on **click**, not on `pointerdown`. Holding a finger
+on it, sliding off, or abandoning a touch does not request microphone access. There is no
+pre-warmed stream, expiry timer or automatic second opening after an error. Keyboard,
+VoiceOver and headphone controls continue to use the same guarded start/stop controller.
+
+Each accepted activation makes one `getUserMedia` request. Clicking again while it is opening
+cancels the take, but browser permission requests cannot be aborted. The button temporarily
+shows "Cancelling microphone request" and is disabled until that request settles and any late
+stream is closed. Further presses cannot open a second stream during that wait. This guard
+is per page; it does not prevent recording deliberately in a different tab.
+
+Stopping releases the microphone; Retry only resubmits the stored WAV. A healthy audio context
+is still reused and suspended between takes to avoid repeated audio-session startup. Safari
+interruption recovery and reset after zero samples remain in place.
 
 A take can run for up to **10 minutes**. At `10:00` it stops and starts transcribing just
 as if the button had been clicked; there is no separate warning or confirmation. The
@@ -324,7 +330,13 @@ Example completion logs (`<uuid>` stands for the response's request ID):
   or `upstream_status=n/a` when no HTTP status is available.
 - Elapsed time covers the request, not just model inference. Audio duration is estimated
   from the browser's 16 kHz mono PCM bytes. Term/character counts and language hints help
-  explain results; microphone-opening time is included when available.
+  explain results.
+- **`mic opened in …ms`** now measures the accepted click/keyboard activation through microphone
+  and audio-graph readiness, excluding time spent holding a pointer before clicking (and any
+  replacement confirmation). The log field is unchanged, but the old pre-warm implementation
+  measured from finger-down. Do not interpret that timing-origin change as a capture speedup.
+  On Retry, this field is reused from the original recording; it does **not** mean the microphone
+  was opened again. Abandoned gestures and cancelled openings produce no transcription request.
 
 ### Reading logs when retrying
 
@@ -509,7 +521,9 @@ retaining and resubmitting the same WAV, double clicks, persistent red error det
 inline retry, notice timers, composer re-mounting and localization, conversation switches,
 missing composers and safely replacing a pending recording. Audio lifecycle tests exercise
 running, suspended, interrupted and closed contexts, failed/stalled/timed-out resumes, stream
-cleanup, and rebuilding a context after zero samples. Diagnostic tests distinguish client,
+cleanup, and rebuilding a context after zero samples. Click-only regressions exercise abandoned
+presses, rapid start-cancel-start while opening/resuming, late success/failure cleanup, a peak of
+one live stream per page, and activation-to-ready timing metadata. Diagnostic tests distinguish client,
 network, HTTP, response-format and explicit empty-result cases, including optional request IDs.
 No microphone, credentials, browser, or live speech-service calls are needed.
 
@@ -518,6 +532,9 @@ an ephemeral debug port and temporary profile. It does not require pi-web, micro
 credentials, or a live speech service. The fixture holds each response until the test releases
 it, making pending/disabled states deterministic. It checks:
 
+- Click-only microphone ownership using generated Web Audio streams (never device input): long
+  pointer holds open nothing, rapid cancellation never opens a second stream, late streams are
+  released, and the next explicit click captures and uploads samples normally.
 - English desktop and Chinese 320 px mobile layouts: original red error details, white
   underlined Retry text, no separate border/background and a 44 × 44 px minimum touch target.
 - Persistent errors, repeated failures without stacked notices, long errors that wrap/scroll,
@@ -539,10 +556,10 @@ otherwise this suite uses the target instance's configured provider.
 
 The timing of the press is covered there too, because it is not something you can eyeball
 reliably. With `getUserMedia` stubbed to take 1.2 seconds, it asserts that the button is
-red in the same task as the click, that the clock only starts once audio exists, that a
-second press during the wait cancels without leaving the microphone open, that
-`pointerdown` opens the microphone for the click to claim, and that a warm stream nobody
-claims is stopped rather than left listening. It also holds a real mouse press across a
+red in the same task as the click, that the clock starts when the audio graph is ready, that a
+second press during the wait cancels without leaving the microphone open, that subsequent
+rapid presses cannot start another opening, and that holding or abandoning a pointer gesture
+never requests the microphone at all. It also holds a real mouse press across a
 clock tick and verifies that one click still stops recording, and advances the recording
 clock across the 10-minute boundary to verify automatic stopping. The icon and clock
 nodes stay mounted while their properties and text are updated, so a timer tick cannot

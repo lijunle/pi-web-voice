@@ -18,6 +18,14 @@
 
 ### Changed
 
+- Make microphone capture click-only. Remove pointer-down pre-warming, its expiry timer,
+  stream-claiming logic and automatic fallback opening. An abandoned pointer gesture never
+  opens a microphone; each accepted activation makes one request through the same controller.
+- Keep the opening guard until a cancelled request settles and its stream is released. Show a
+  temporary cancelling/busy state instead of allowing rapid start-cancel-start to open a second
+  stream. Healthy-context reuse, Safari recovery, keyboard access and transcription Retry remain.
+- Measure `mic opened in …ms` from the accepted activation rather than finger-down. Retries keep
+  the original take's wait metadata; no additional runtime logs or audio data are recorded.
 - Retryable error toasts persist instead of disappearing after four seconds. Retry stays
   disabled while a request is running; another failure updates the error without stacking
   notices, and success removes both the notice and pending recording.
@@ -43,6 +51,10 @@
 - Cover client/server diagnostic distinctions, HTTP/JSON/schema errors, optional request IDs,
   and Safari-style interrupted, rejected, stalled and timed-out audio-context resumes. Clarify
   that the recording clock indicates graph readiness, not proof of uninterrupted sample delivery.
+- Add regression coverage for click-only ownership across pointer holds, cancelled openings, audio-resume delays,
+  late resolutions/rejections and another start after cleanup. Assert that live-stream count never
+  exceeds one per page, and that the wait metadata excludes pointer-hold time. The isolated
+  browser suite also exercises this lifecycle with real, generated Web Audio streams.
 - Check that repeated uploads receive distinct request IDs and appropriate error/success logs
   without logging audio, transcripts, credentials, session IDs, paths or upstream error bodies.
 - Add `npm run test:retry`: a deterministic, self-contained headless-browser regression with
@@ -59,5 +71,7 @@
 - The runtime logging format is unchanged by the retry feature. Each uploaded attempt is a
   separate request; a cached-text insertion does not generate another service request or log.
   Client failures before an upload likewise do not create a server transcription log.
+- Microphone opening is serialized within a page, not locked across different tabs. The iOS
+  microphone indicator is not a count of this application's streams.
 - Audio-context recovery is covered with simulated lifecycle states; the reported iPhone Safari
   problem still needs device-side confirmation after deploying the change.
