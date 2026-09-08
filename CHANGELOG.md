@@ -46,6 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Upgrade all workflow pins to `actions/checkout` v7.0.1 and `actions/setup-node`
+  v7.0.0, retaining full commit SHAs and the existing test, credential, and release gates.
 - Organize tests into `test:unit`, `test:integration`, and opt-in `test:e2e`.
   `npm test` and `npm run check` now include server and browser integration checks;
   use Node 22.19+, pi-web on PATH, and `npx playwright install chromium` for the full

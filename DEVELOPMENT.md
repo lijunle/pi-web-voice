@@ -355,8 +355,9 @@ development tools and local fixtures. Keep the runtime dependency list empty; th
 installation belongs to test setup. The host's top-level version is pinned, while its
 transitive ranges resolve during installation.
 
-Actions use full commit pins and checkout leaves Git credentials out of the working
-tree. Superseded CI runs cancel; live and publish runs serialize separately. CI uses
+Actions use full commit pins for `actions/checkout` v7.0.1 and `actions/setup-node`
+v7.0.0, and checkout leaves Git credentials out of the working tree. Superseded CI
+runs cancel; live and publish runs serialize separately. CI uses
 local fixtures and mock responses, independently of live-provider or publishing setup.
 Use the Actions logs to inspect each job's actual commands and test results.
 
