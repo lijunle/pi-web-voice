@@ -4,7 +4,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { transcribe, vadMode, termBudget } = require("../lib/providers.cjs");
+const { transcribe, vadMode, termBudget } = require("../../lib/providers.cjs");
 const audio = Buffer.alloc(6444);
 const terms = ["CLI", "retry_safe", "implementation.md"];
 const languages = ["zh", "en"];

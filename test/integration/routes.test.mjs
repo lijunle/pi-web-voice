@@ -6,7 +6,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { createRouter } = require("../lib/routes.cjs");
+const { createRouter } = require("../../lib/routes.cjs");
 const audio = Buffer.alloc(44 + 3 * 16000 * 2);
 const privateText = "PRIVATE_TRANSCRIPT_do_not_log";
 

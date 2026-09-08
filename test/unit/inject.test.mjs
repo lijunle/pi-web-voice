@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../public/inject.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../../public/inject.js", import.meta.url), "utf8");
 const SERVER_EMPTY = "[Server · empty transcript] Audio was submitted, but the server returned no transcription text (HTTP 200)";
 
 function harness(text, { language = "en", now = Date.now } = {}) {

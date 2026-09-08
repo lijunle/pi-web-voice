@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { collectTerms, resolveProject, resolveSession, __cache, __resetIndex } = require("../lib/context.cjs");
+const { collectTerms, resolveProject, resolveSession, __cache, __resetIndex } = require("../../lib/context.cjs");
 const config = { context: { maxTerms: 400, bytes: 4096, sessions: 5 } };
 
 function fixture(t, lines) {

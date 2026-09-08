@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An explicit live `test:e2e` that drives Playwright Chromium through an isolated
+  pi-web host and the configured speech service using a committed synthetic speech
+  fixture. It requires recognizable text, exact draft insertion, resource cleanup,
+  and no chat submission; mock configuration fails rather than masquerading as live E2E.
+- Strict real-pi-web/mock integration assertions for consecutive takes, selected-range
+  insertion, WAV/request metadata, cleanup, observed clock ticks, and recording limits.
+  Negative unit checks reject the former smoke test's false-success conditions.
 - A validated `audio_context=per-take` capture-policy marker in transcription logs,
   retained through Retry. Missing or unrecognized markers log as `unspecified` so
   older open pages and direct callers are distinguishable without logging raw input.
@@ -33,6 +40,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Organize tests into `test:unit`, `test:integration`, and opt-in `test:e2e`.
+  `npm test` and `npm run check` now include server and browser integration checks;
+  use Node 22.19+, pi-web on PATH, and `npx playwright install chromium` for the full
+  check. Unit tests and the application retain Node 20 support.
+- Replace `test:retry` and the Edge-specific CDP scripts with Playwright-driven browser
+  integration using locked, development-only Playwright Chromium. Real-pi-web tests
+  own temporary homes/ports, select the initial project through the UI, and preserve
+  personal credentials and installed pi-web files. See [testing](DEVELOPMENT.md#test-commands-and-isolation).
 - Remove cross-take AudioContext reuse: each recording creates a fresh context and
   closes it on stop, cancellation, or failure instead of suspending it between takes.
   This provides a lifecycle-isolation trial for reported iOS 26.6.1 home-screen PWA
@@ -69,6 +84,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Bound pending browser evaluations and response-body reads in the test harness,
+  redact malformed/read-failure details, and sample the clock after mouse-down to
+  avoid a false-positive clock-crossing check.
+- Supervise suite process groups and temporary homes outside the child process so
+  forced termination and early exit clean up host descendants and credential files.
+  Validate temporary settings before file creation and preserve literal quotes.
+- Require an explicit-run marker for live E2E so native Node test discovery cannot
+  accidentally invoke a speech service. Block early and duplicate live-test uploads
+  before server dispatch, rather than checking the count after potentially billable
+  requests. Add isolated browser and process-lifecycle regressions without additional
+  live speech calls.
+- Require complete, correctly sized, non-silent PCM WAV data in browser round trips
+  so the mock provider cannot hide silent capture or malformed encoding.
 - Keep the development toolchain compatible with Node 20.0.0 by using TypeScript 6's
   JavaScript CLI, and initialize HTTP fixtures explicitly per test on that test runner.
 - Reject unknown provider names, including inherited object properties, and validate

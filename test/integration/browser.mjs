@@ -1,35 +1,20 @@
 /**
- * Offline browser regression for the accepted Retry toast.
- *
- *   npm run test:retry
- *
- * Requires Node 22+ and Edge (or BROWSER pointing to another Chromium binary).
- * Starts its own loopback fixture and isolated headless browser. No pi-web,
- * microphone permissions, credentials or speech service are used.
+ * Browser integration against a loopback fixture, driven by Playwright Chromium.
+ * Covers recording ownership, response handling, Retry, and desktop/narrow layouts.
+ * All audio is synthetic; the fixture supplies every transcription response.
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import http from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { openBrowser, waitFor } from "../helpers/browser.mjs";
 
-assert.equal(typeof WebSocket, "function", "browser tests require Node 22+ (global WebSocket)");
-assert.ok(!process.env.NODE_OPTIONS, "use npm run test:retry so the installed hook is not preloaded");
+assert.ok(!process.env.NODE_OPTIONS, "use npm run test:integration so the installed hook is not preloaded");
 
-const source = readFileSync(new URL("../public/inject.js", import.meta.url));
+const source = readFileSync(new URL("../../public/inject.js", import.meta.url));
 const uploads = [];
 const capturePolicies = [];
 const waiting = new Map();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function waitFor(condition, description, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if (await condition()) return;
-    await sleep(50);
-  } while (Date.now() < deadline);
-  throw new Error(`Timed out waiting for ${description}`);
-}
 
 // Responses are held until the test releases them, so working/disabled states
 // and duplicate clicks are checked without racing a fast or slow speech API.
@@ -85,49 +70,7 @@ async function respond(index, status, body) {
   await respondRaw(index, status, JSON.stringify(body), "application/json");
 }
 
-function connect(url) {
-  const socket = new WebSocket(url);
-  const pending = new Map();
-  let nextId = 0;
-  const ready = new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", reject, { once: true });
-  });
-  socket.addEventListener("message", event => {
-    const message = JSON.parse(event.data);
-    const entry = pending.get(message.id);
-    if (!entry) return;
-    pending.delete(message.id);
-    clearTimeout(entry.timer);
-    if (message.error) entry.reject(new Error(message.error.message));
-    else entry.resolve(message.result);
-  });
-  socket.addEventListener("close", () => {
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(new Error("Browser connection closed"));
-    }
-    pending.clear();
-  });
-  return {
-    ready,
-    close: () => socket.close(),
-    send(method, params = {}) {
-      const id = ++nextId;
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error(`CDP timed out: ${method}`));
-        }, 15_000);
-        pending.set(id, { resolve, reject, timer });
-        try { socket.send(JSON.stringify({ id, method, params })); }
-        catch (error) { pending.delete(id); clearTimeout(timer); reject(error); }
-      });
-    },
-  };
-}
-
-let browser, cdp, profile;
+let browser;
 let checks = 0;
 function check(name, condition) {
   assert.ok(condition, name);
@@ -138,54 +81,25 @@ function check(name, condition) {
 try {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  profile = mkdtempSync(join(tmpdir(), "pi-web-voice-retry-"));
-  browser = spawn(process.env.BROWSER || "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", [
-    "--headless=new", "--disable-gpu", "--disable-background-networking", "--no-first-run",
-    "--autoplay-policy=no-user-gesture-required", // synthetic Web Audio input, never a device microphone
-    "--remote-debugging-port=0", `--user-data-dir=${profile}`, origin,
-  ], { stdio: "ignore" });
-  let startupError;
-  browser.on("error", error => { startupError = error; });
-  let port;
-  await waitFor(() => {
-    if (startupError) throw startupError;
-    if (browser.exitCode !== null) throw new Error(`Browser exited with ${browser.exitCode}`);
-    try { port = Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0]); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-    return port > 0;
-  }, "browser debugging port");
-  let page;
-  await waitFor(async () => {
-    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    page = pages.find(entry => entry.type === "page" && entry.url.startsWith(origin));
-    return page?.webSocketDebuggerUrl;
-  }, "fixture page");
-  cdp = connect(page.webSocketDebuggerUrl);
-  await cdp.ready;
-  await cdp.send("Runtime.enable");
-  await cdp.send("Page.enable");
-  const evaluate = async expression => {
-    const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", {
-      expression, awaitPromise: true, returnByValue: true,
-    });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description || "Browser evaluation failed");
-    return result.value;
-  };
+  const driver = await openBrowser();
+  browser = driver.browser;
+  const { page, evaluate } = driver;
   const idle = () => waitFor(() => evaluate('window.__piWebVoice.ui.state === "idle"'), "idle UI");
   const click = async (target = "retryButton") => {
     const point = await evaluate(`(() => {
       const r=window.__piWebVoice.ui[${JSON.stringify(target)}].getBoundingClientRect();
       return {x:r.x+r.width/2,y:r.y+r.height/2};
     })()`);
-    await cdp.send("Input.dispatchMouseEvent", { ...point, type: "mousePressed", button: "left", buttons: 1, clickCount: 1 });
-    await cdp.send("Input.dispatchMouseEvent", { ...point, type: "mouseReleased", button: "left", buttons: 0, clickCount: 1 });
+    // Native mouse input also exercises disabled buttons without Playwright
+    // waiting for them to become enabled before the duplicate-click check.
+    await page.mouse.click(point.x, point.y);
   };
 
   for (const [language, width, height] of [["en", 900, 700], ["zh-CN", 320, 568]]) {
     const captureUpload = uploads.length + 1;
     const label = language === "en" ? "Retry" : "重试";
-    await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 400 });
-    await cdp.send("Page.navigate", { url: `${origin}/?language=${language}` });
+    await page.setViewportSize({ width, height });
+    await page.goto(`${origin}/?language=${language}`, { waitUntil: "domcontentloaded" });
     await waitFor(() => evaluate('!!window.__piWebVoice?.ui.button?.isConnected'), "mounted microphone");
 
     // Exercise click-only ownership with real Web Audio streams, but never
@@ -304,10 +218,7 @@ try {
     check(`${language}: composer re-mount leaves the Retry action intact`, await evaluate('window.__oldRetry===window.__piWebVoice.ui.retryButton && window.__oldRetry.isConnected'));
     await evaluate('window.__piWebVoice.ui.retryButton.focus()');
     assert.ok(await evaluate('document.activeElement===window.__piWebVoice.ui.retryButton'));
-    await cdp.send("Input.dispatchKeyEvent", {
-      type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r",
-    });
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    await page.keyboard.press("Enter");
     await respond(start + 3, 200, { text: "Recovered transcript" });
     await idle();
     check(`${language}: keyboard retry recovers exactly once and clears the notice`, await evaluate(`(() => {
@@ -397,23 +308,14 @@ try {
   await evaluate('window.__recordTake()');
   await respond(last, 503, { error: "Pending before reload" });
   await idle();
-  await cdp.send("Page.reload");
+  await page.reload({ waitUntil: "domcontentloaded" });
   await waitFor(() => evaluate('!!window.__piWebVoice?.ui.button?.isConnected && window.__piWebVoice.ui.pending===null'), "fresh page");
   check("reload clears page-only audio and does not silently re-upload it", uploads.length === last && await evaluate('window.__piWebVoice.ui.retryButton===null && window.__piWebVoice.ui.toastElement===null'));
-  console.log(`\n${checks}/${checks} browser retry checks passed`);
+  console.log(`\n${checks}/${checks} browser integration checks passed`);
 } finally {
-  cdp?.close();
-  if (browser?.pid && browser.exitCode === null && browser.signalCode === null) {
-    const exited = new Promise(resolve => browser.once("exit", resolve));
-    browser.kill();
-    const timer = setTimeout(() => browser.kill("SIGKILL"), 2000);
-    await exited;
-    clearTimeout(timer);
-  }
-  server.closeAllConnections();
-  if (server.listening) await new Promise(resolve => server.close(resolve));
-  if (profile) {
-    try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
-    catch { console.warn("Temporary browser profile could not be removed"); }
+  try { await browser?.close(); }
+  finally {
+    server.closeAllConnections();
+    if (server.listening) await new Promise(resolve => server.close(resolve));
   }
 }

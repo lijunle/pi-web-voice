@@ -12,8 +12,8 @@ import nodeTest from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { install } = require("../lib/patch.cjs");
-const { loadConfig } = require("../lib/config.cjs");
+const { install } = require("../../lib/patch.cjs");
+const { loadConfig } = require("../../lib/config.cjs");
 
 const PREFIX = "/__voice";
 const TAG = `<script src="${PREFIX}/inject.js" defer></script>`;

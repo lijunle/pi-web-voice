@@ -3,7 +3,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { isRecord, errorMessage, errorStatus } = require("../lib/guards.cjs");
+const { isRecord, errorMessage, errorStatus } = require("../../lib/guards.cjs");
 
 test("record guards narrow JSON objects and errors while excluding primitives and arrays", () => {
   for (const value of [null, undefined, "text", 42, true, [], () => {}]) {

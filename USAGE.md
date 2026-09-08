@@ -9,8 +9,10 @@ details belong in [DEVELOPMENT.md](DEVELOPMENT.md).
 The runtime requires Node.js 20+, a working `pi-web` command, and a browser that supports
 microphone capture and Web Audio. The integration's compatibility baseline is pi-web
 `0.9.0` (pi `0.85.1`); check compatibility when selecting another version.
-Browser-based developer tests have additional requirements, described in
-[Development and testing](DEVELOPMENT.md#development-and-testing).
+Developer checks use unit and integration tiers, including Playwright Chromium and
+an isolated pi-web host. The explicit E2E tier also calls a real speech service.
+See [Development and testing](DEVELOPMENT.md#development-and-testing) for setup and
+[Live E2E and credentials](DEVELOPMENT.md#live-e2e-and-credentials) for service access.
 
 ```bash
 npm install -g @agegr/pi-web   # install the pi-web host as needed

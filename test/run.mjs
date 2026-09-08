@@ -1,38 +1,43 @@
-/**
- * Runs the test suite in a child process with NODE_OPTIONS cleared.
- *
- * The hook is normally loaded through NODE_OPTIONS, so a shell started from
- * inside a hooked pi-web inherits it. That would preload the hook into the
- * test runner itself, `install()` would find the prototype already patched and
- * do nothing, and the tests would silently exercise the ambient installation
- * instead of their own. Stripping the variable keeps the suite hermetic.
- */
-
-import { spawn } from "node:child_process";
+/** Run explicit test tiers against the checkout, with inherited hooks removed. */
+import { runSuite } from "./helpers/suite.mjs";
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const env = { ...process.env };
-delete env.NODE_OPTIONS;
-
-// Browser suites remain opt-in and get the same clean environment. Otherwise
-// a preloaded installed hook could inject a second script into the local fixture.
-const suite = process.argv[2];
-if (suite && !["e2e-edge.mjs", "e2e-retry.mjs"].includes(suite)) {
-  console.error(`Unknown browser suite: ${suite}`);
+const here = fileURLToPath(new URL("./", import.meta.url));
+const requested = process.argv.slice(2);
+if (requested.length > 1 || (requested.length && !["unit", "integration", "e2e"].includes(requested[0]))) {
+  console.error("Usage: node test/run.mjs [unit|integration|e2e]");
   process.exit(1);
 }
-const tests = readdirSync(here)
-  .filter((file) => file.endsWith(".test.mjs"))
-  .sort()
-  .map((file) => join(here, file));
-const args = suite ? [join(here, suite), ...process.argv.slice(3)] : ["--test", ...tests];
-const child = spawn(process.execPath, args, {
-  env,
-  stdio: "inherit",
-});
+const tiers = requested.length ? requested : ["unit", "integration"];
+const env = { ...process.env };
+delete env.NODE_OPTIONS;
+// Ordinary checks never select a live provider, even in a credentialed shell.
+if (!tiers.includes("e2e")) env.PI_VOICE_PROVIDER = "mock";
+// Native `node --test` discovers every .mjs under test/, not only *.test.mjs.
+// Authorize paid calls only for the explicitly selected tier, never by inheritance.
+env.PI_VOICE_TEST_LIVE = tiers.includes("e2e") ? "1" : "0";
 
-child.on("error", error => { console.error(error.message); process.exit(1); });
-child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
+const run = (args, timeoutMs) => runSuite(args, { env, timeoutMs });
+
+try {
+  for (const tier of tiers) {
+    console.log(`\n=== ${tier} ===`);
+    if (tier === "e2e") {
+      await run([join(here, "e2e/speech.mjs")], 180_000);
+      continue;
+    }
+    const tests = readdirSync(join(here, tier)).filter(file => file.endsWith(".test.mjs")).sort();
+    if (!tests.length) throw new Error(`No ${tier} tests found`);
+    await run(["--test", ...tests.map(file => join(here, tier, file))]);
+    if (tier === "integration") {
+      await run([join(here, "integration/harness-browser.mjs")]);
+      await run([join(here, "integration/browser.mjs")]);
+      await run([join(here, "integration/pi-web.mjs")]);
+    }
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+}

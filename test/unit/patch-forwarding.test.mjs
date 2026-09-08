@@ -5,7 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const source = readFileSync(new URL("../lib/patch.cjs", import.meta.url), "utf8");
+const source = readFileSync(new URL("../../lib/patch.cjs", import.meta.url), "utf8");
 
 test("a throwing header accessor propagates once before native forwarding", () => {
   const expected = new Error("header accessor failure");

@@ -6,7 +6,8 @@ belong in [CHANGELOG.md](CHANGELOG.md).
 
 ## Runtime architecture
 
-The server/CLI code uses CommonJS; tests use Node's native test runner and ES modules.
+The server/CLI code uses CommonJS. Unit and server integration tests use Node's native
+test runner and ES modules; browser integration and live E2E use Playwright Chromium.
 The browser code is a single self-contained script. The runtime uses Node.js and browser
 APIs directly, and the source files run as-is.
 
@@ -223,18 +224,25 @@ ten minutes. Keep fetch-to-headers timing distinct from end-to-end request durat
 
 ### Environment and active installation
 
-Node.js 20+ runs the application and unit suite directly from a checkout. Install the
-locked development tools before running the full check:
+Node.js 20+ runs the application and unit suite directly from a checkout. Use
+**Node.js 22.19+** for the full development check, matching pi-web's requirement.
+Install the locked development tools, Playwright Chromium, and the pi-web host:
 
 ```bash
 npm ci
+npx playwright install chromium
+npm install -g @agegr/pi-web@0.9.0  # compatibility baseline; supply pi-web on PATH
 npm run check
 ```
 
-TypeScript 6 and Node 20 type definitions are development dependencies; the application
-continues to execute its CommonJS source directly. Browser suites require **Node.js 22+**
-for global WebSocket and Microsoft Edge by default; set `BROWSER=/path/to/chromium`
-to use another Chromium binary.
+On Linux CI, use `npx playwright install --with-deps chromium` to install browser
+system libraries too. Playwright 1.63.0 supplies a versioned Chromium; the tests use
+its Playwright driver for navigation, input, requests, and resource cleanup. Use this
+managed browser for reproducible checks across developer machines and CI.
+
+TypeScript 6, Node 20 type definitions, and Playwright are development dependencies.
+The application executes its CommonJS source directly with zero runtime dependencies;
+Playwright and the test fixtures stay outside the published runtime files.
 
 Identify the active installation through the service's `NODE_OPTIONS` and
 `pi-web-voice hook-path`. Update that copy to apply changes. Client changes need a page
@@ -262,40 +270,83 @@ CommonJS files.
 ### Test commands and isolation
 
 ```bash
-npm run check          # server type checking followed by the unit suite
-npm run typecheck      # static checking only
-npm test
-npm run test:retry
-npm run test:e2e -- http://127.0.0.1:31141
+npm run check             # server type checking + all unit and integration checks
+npm run typecheck         # static checking only
+npm test                 # all unit and integration checks, including browsers
+npm run test:unit
+npm run test:integration  # server fixtures + browser fixtures + real pi-web/mock
+npm run test:e2e          # opt-in real speech call; provider usage may be billed
 ```
 
-The unit and browser test commands use `test/run.mjs`, which clears `NODE_OPTIONS` in
-the child suite so tests exercise the checkout's own code. `npm run check` combines
-server type checking with `npm test`. Browser suites are opt-in; `npm test` selects only
-`*.test.mjs` and remains independent of the TypeScript tools.
+`test/run.mjs` clears inherited `NODE_OPTIONS` so child suites exercise the checkout's
+own hook. Default checks explicitly select mock and run each stage sequentially with
+bounded suite timeouts. A failing stage exits nonzero; automatic retries are outside
+the runner's behavior. Keep real speech calls in the explicitly selected E2E tier.
+Use the npm commands so the outer supervisor owns each suite's private directory and
+process cleanup, including forced timeouts and interruption. The runner supplies the
+live opt-in marker only for `test:e2e`; direct/native test discovery of that entry point
+fails before reading provider configuration or starting a browser/server.
 
-| Command | Environment | Speech-service access |
+| Tier | Files | Boundary and requirements |
 | --- | --- | --- |
-| `npm run check` | TypeScript plus the unit-test environment below | Static analysis, local fixtures, and mock responses |
-| `npm run typecheck` | Development dependencies and `tsconfig.json` | Static analysis only |
-| `npm test` | Node tests, local HTTP servers, DOM/VM harness, mocked fetch | Local fixtures and mock responses |
-| `npm run test:retry` | Own loopback fixture and isolated headless Chromium with generated audio | Local fixture only; synthetic audio supplies the input |
-| `npm run test:e2e -- <url>` | A separately running pi-web plus headless Chromium | Uses the target's configured backend; select mock for isolated testing |
+| Unit | `test/unit/*.test.mjs` | Native Node tests, DOM/VM harness, mocked provider fetch; Node 20+ |
+| Integration | `test/integration/*.test.mjs` | Local HTTP servers, CLI subprocesses, temporary configuration/session files |
+| Integration | `test/integration/harness-browser.mjs` | Playwright Chromium + loopback services; driver timeouts, request budgets, and cancellation |
+| Integration | `test/integration/browser.mjs` | Playwright Chromium + local response fixture; synthetic Web Audio |
+| Integration | `test/integration/pi-web.mjs` | Playwright Chromium + real pi-web + checkout hook + mock speech provider |
+| E2E | `test/e2e/speech.mjs` | Playwright Chromium + real pi-web + real configured speech provider + composer insertion |
 
-For a dedicated integration instance, run this separately before the E2E command:
+All browser integration scripts belong to the same `test:integration` command.
+The pi-web integration and E2E helpers own a loopback server on a temporary port, a
+private temporary HOME, and an isolated browser context. They select a project through
+pi-web's real UI before waiting for the microphone button. Service workers stay blocked;
+a guard installed before application code keeps microphone acquisition synthetic.
 
-```bash
-PI_VOICE_PROVIDER=mock pi-web-voice -p 31141
-```
+The supervisor owns the suite's private directory outside the child process. Linux/macOS
+suite process groups include the host descendants, so forced termination also releases
+host sockets and removes credential files when child cleanup cannot run. Windows uses
+a bounded `taskkill /t /f` path; its process-tree behavior requires Windows validation.
+Normal host exit/failure aborts the browser callback, and fixture servers close even if
+browser cleanup fails. Polling bounds the awaited condition itself, and response-body
+reading has a separate bound after HTTP headers arrive.
 
-The instance needs a working pi-web installation. Point tests at an isolated instance
-with synthetic conversations. Browser profiles are temporary; the retry fixture uses
-an ephemeral debug port, while the integration script uses port 9333.
+### Live E2E and credentials
+
+Configure a real backend as described in [USAGE](USAGE.md#backends), then explicitly
+run `npm run test:e2e`. It reads the selected configuration from the normal environment
+or `~/.pi/agent/voice.env`; mock configuration produces a failure before browser/server
+startup. The host helper validates settings before creating files and copies only
+supported voice settings into its temporary `0600` configuration file. It adds one
+outer quote pair to preserve literal values through the project's parser. Browser
+processes receive a credential-free environment, and the host uses a fresh agent
+directory with no personal sessions or extensions.
+
+E2E plays the committed [synthetic speech fixture](https://github.com/lijunle/pi-web-voice/blob/main/test/fixtures/README.md) after the
+capture graph is ready. The network guard permits one transcription POST only after
+the complete take is ready; it blocks early or duplicate uploads before server dispatch
+and records unexpected application writes, including external writes. E2E requires a
+valid, non-silent PCM WAV, recognizable nonempty text, and exact draft insertion.
+Response-read/JSON failures use bounded, redacted diagnoses in the test output.
+Provider compatibility fallbacks can make an additional upstream attempt within that
+one POST. This checks a small English sample, not general recognition accuracy or
+physical microphone behavior.
+
+Agent model credentials are separate from speech credentials. These tests finish at
+the composer and block chat submission/agent-start requests, so they require no agent
+key or model turn. Use mock integration for ordinary CI. For real E2E on GitHub Actions,
+use a manually triggered job with environment approval, a dedicated speech-service key
+in an Environment Secret, and endpoint/deployment settings in environment variables.
+Keep real speech credentials outside pull-request jobs.
 
 ### Automated coverage
 
+- **Test harness:** pending evaluations and body reads, late rejections, malformed-response
+  redaction, one-upload enforcement before dispatch, and host-driven browser cancellation.
+  POSIX child fixtures cover success, callback failure, early process exit, an unresponsive
+  suite, cancellation, and missing pi-web installation; sockets close and private files clear.
 - **Configuration and CLI:** direct CommonJS commands, private configuration initialization,
-  file caching, environment precedence, and file-based credential isolation in child fixtures.
+  file caching, environment precedence, literal quote round trips, rejected configuration
+  without temporary files, and file-based credential isolation in child fixtures.
 - **HTTP interception:** streamed/fixed HTML injection, split UTF-8, byte views, string
   encodings, immutable object/raw headers, content-length handling, compressed/alternative
   charset pass-through, callbacks, fluent return values, and single-call error propagation.
@@ -321,8 +372,8 @@ an ephemeral debug port, while the integration script uses port 9333.
   `Response`/`ReadableStream` tests cover HTML/plaintext/empty bodies, malformed/schema-invalid
   JSON, bad/missing content types, and response-read failures.
 
-The isolated retry browser fixture controls response timing and tests English desktop
-and Chinese 320 px mobile layouts. It checks persistent red errors, white underlined
+The browser integration fixture controls response timing and tests English desktop
+and Chinese 320 px narrow-screen layouts. It checks persistent red errors, white underlined
 Retry text with a transparent background and zero border, keyboard focus, a minimum
 44 × 44 px touch target, long-message wrapping/scrolling, single-notice behavior, and
 cleanup/refresh. It also checks distinct real audio contexts for consecutive takes,
@@ -332,12 +383,23 @@ invalid/empty HTTP 200 responses, and a TCP response
 cut after 502 headers. Its response-reader guard enforces the single `text()` read path;
 recovery uses the retained WAV and inserts the transcript exactly once.
 
-The real-pi-web suite checks injection and mounting, terminal exclusion, synthetic-audio
-capture, delayed microphone opening/cancellation, and abandoned pointer gestures.
-It holds a real mouse click across a clock tick and advances the recorder clock across
-the ten-minute boundary to test the limit immediately. Its final round-trip smoke check
-accepts either a nonempty composer or a recognized notice, including an error; the
-isolated retry suite makes exact transcript-insertion assertions.
+The real-pi-web integration checks injection and mounting, terminal exclusion,
+synthetic-audio capture, delayed microphone opening/cancellation, and abandoned pointer
+gestures. Three consecutive takes in the same page each require a fresh context, an
+actual PCM WAV upload, HTTP 200 with the mock provider, and exactly one insertion of
+the returned text at the selected draft range. Original draft surroundings and terminal
+text stay intact; pending audio, notices, tracks, and capture nodes clear on success.
+
+The suite samples the clock after mouse-down, holds until it observes another tick,
+and releases in a cleanup block, so a tick before the press cannot satisfy the assertion.
+It advances the recorder clock across the ten-minute boundary and waits for actual audio
+callbacks to verify automatic stopping. Readiness follows mounted UI, captured samples,
+responses, and resource state with bounded waits. Deliberate hold delays exercise timing
+contracts rather than substitute for readiness. Unit tests of the shared success contract
+reject stale drafts, incorrect/duplicate insertion, notices, retained audio, wrong providers,
+empty results, and terminal modifications. WAV checks validate PCM format, byte/block
+rates, declared chunk sizes, complete samples, and non-silent fixture audio so the mock
+provider's acceptance of arbitrary bytes cannot hide a broken capture/encoding path.
 
 ### Manual verification
 
@@ -353,8 +415,31 @@ The **2026-09-08 validation record** covers the per-take-context implementation:
 - **Deployment:** the served client matches the checkout. Two observed Azure OpenAI
   request logs report `audio_context=per-take` and `result=transcribed`; verification
   uses existing request metadata and makes no additional live speech-service calls.
-- **Automated checks:** `npm run check` passes server type checking and 147 unit tests;
-  `npm run test:retry` passes 63 isolated Chromium checks with synthetic audio.
+- **Per-take regression coverage:** Node checks cover unit and local integration
+  behavior; the browser fixture covers 63 synthetic-audio checks.
+
+The **2026-09-08 test-tier validation** uses the working tree based on `9260b2b`, macOS arm64,
+Node 26.8.1, pi-web 0.9.0, Playwright 1.63.0, and Chromium 153.0.8010.12:
+
+- **Review regression:** `npm run check` passes static checking, 157 unit tests,
+  48 server integration tests, 8 browser harness checks, 63 browser fixture checks,
+  and 25 real-pi-web/mock integration checks. Review checks use isolated services
+  only; the original eight Node test files retain every assertion.
+- **Compatibility:** Node 20.0.0 passes static checking, all 157 unit tests, and the
+  48 server integration tests. Browser/host checks use the Node 26 environment above.
+  POSIX process-tree regression checks apply to macOS/Linux; Windows has no validation
+  record here.
+- **Live-provider evidence:** one synthetic-speech browser upload through Azure OpenAI
+  `gpt-transcribe` uses a deployment-style URL with `api-version=2025-03-01-preview`,
+  automatic VAD, zero conversation terms, and exact composer insertion. The request
+  reports 5.2 seconds of captured audio, 1.7 seconds of route time, and 72 returned
+  characters. This record verifies speech recognition and insertion; the request guard
+  and supervisor have separate isolated regression coverage. The private resource
+  endpoint and key stay in local configuration; the record makes no region-availability
+  assertion.
+- **Opt-in boundary:** native discovery of the live entry point fails before provider
+  configuration, and selecting mock for `test:e2e` exits nonzero before service startup.
+  Provider usage belongs only to the explicit live-provider record above.
 
 Continue daily use to assess recurrence of the intermittent failure. The normal-input
 check establishes current functionality, while isolated Chromium checks verify lifecycle
