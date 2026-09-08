@@ -139,9 +139,17 @@ shows "Cancelling microphone request" and is disabled until that request settles
 stream is closed. Further presses cannot open a second stream during that wait. This guard
 is per page; it does not prevent recording deliberately in a different tab.
 
-Stopping releases the microphone; Retry only resubmits the stored WAV. A healthy audio context
-is still reused and suspended between takes to avoid repeated audio-session startup. Safari
-interruption recovery and reset after zero samples remain in place.
+Stopping releases the microphone; Retry only resubmits the stored WAV. Every take acquires a
+fresh `MediaStream`, and the previous one's tracks are stopped, so the operating-system
+recording indicator reflects the current take rather than accumulated streams.
+
+A healthy audio context is reused and suspended between takes to avoid repeated audio-session
+startup. That context belongs to the page, so switching projects or conversations inside one
+tab keeps using it; separate tabs have their own. The context carries no recorded audio: the
+sample buffer is reset at the start of every take, so one take cannot leak into the next or
+into another project. A pending recording still belongs to the conversation it was made in
+— see [Retry](#retry-a-failed-transcription) — and starting a new recording replaces it after
+confirmation. Safari interruption recovery and reset after zero samples remain in place.
 
 A take can run for up to **10 minutes**. At `10:00` it stops and starts transcribing just
 as if the button had been clicked; there is no separate warning or confirmation. The
@@ -549,7 +557,9 @@ missing composers and safely replacing a pending recording. Audio lifecycle test
 running, suspended, interrupted and closed contexts, failed/stalled/timed-out resumes, stream
 cleanup, and rebuilding a context after zero samples. Click-only regressions exercise abandoned
 presses, rapid start-cancel-start while opening/resuming, late success/failure cleanup, a peak of
-one live stream per page, and activation-to-ready timing metadata. Diagnostic tests distinguish client,
+one live stream per page, and activation-to-ready timing metadata. Consecutive takes are checked
+to acquire distinct microphone streams while reusing one page audio context, with the sample
+buffer reset per take. Diagnostic tests distinguish client,
 network, HTTP, response-format and explicit empty-result cases, including optional request IDs.
 Response tests use real `Response` bodies and `ReadableStream` failures, not just a mocked
 `json()` rejection: HTML/plaintext/empty bodies, truncated JSON, wrong/missing content types,

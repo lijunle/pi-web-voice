@@ -63,6 +63,9 @@
   late resolutions/rejections and another start after cleanup. Assert that live-stream count never
   exceeds one per page, and that the wait metadata excludes pointer-hold time. The isolated
   browser suite also exercises this lifecycle with real, generated Web Audio streams.
+- Document and test the per-take stream and per-page context lifecycle: consecutive takes, including
+  across conversations in one tab, acquire distinct microphone streams, release them on stop, reuse a
+  single audio context and start from an empty sample buffer.
 - Exercise actual `Response` bodies and failed `ReadableStream` reads in unit tests. Extend the
   browser fixture to send real HTML/plaintext/empty error bodies and to sever a TCP response after
   its HTTP 502 headers. Guard against `Response.json()` use, verify one text read per attempt, and
@@ -86,6 +89,8 @@
   separate request; a cached-text insertion does not generate another service request or log.
   Client failures before an upload likewise do not create a server transcription log.
 - Microphone opening is serialized within a page, not locked across different tabs. The iOS
-  microphone indicator is not a count of this application's streams.
+  microphone indicator is not a count of this application's streams. One page audio context is
+  shared by every conversation in that tab; it holds no recorded audio, and pending takes stay
+  bound to the conversation that produced them.
 - Audio-context recovery is covered with simulated lifecycle states; the reported iPhone Safari
   problem still needs device-side confirmation after deploying the change.

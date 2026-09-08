@@ -932,6 +932,39 @@ test("microphone wait metadata measures click-to-ready, excluding the pointer ho
   assert.equal(h.requests[0].url, "/__voice/transcribe?wait=1200");
 });
 
+test("consecutive takes use a fresh microphone stream, one page audio context and a clean buffer", async t => {
+  const h = audioHarness("missing");
+  mountToolbar(h);
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
+  const seen = [];
+  for (const conversation of ["project-A", "project-B", "project-B"]) {
+    new h.window.EventSource(`/api/agent/${conversation}/events`);
+    await h.ui.start();
+    clearInterval(h.ui.timer);
+    seen.push({
+      conversation,
+      stream: h.recorder.stream,
+      context: h.recorder.context,
+      buffered: h.recorder.chunks.length,
+    });
+    // Samples from this take only; the next take must not inherit them.
+    h.recorder.chunks = [new Float32Array(128)];
+    h.recorder.active = true;
+    h.ui.state = "recording";
+    await h.ui.stop();
+    assert.equal(h.recorder.stream, null, "the microphone is released on stop");
+  }
+
+  assert.equal(new Set(seen.map(take => take.stream)).size, 3, "each take gets its own MediaStream");
+  assert.equal(h.tracks.length, 3);
+  assert.ok(h.tracks.every(track => track.readyState === "ended"), "no stream is left listening");
+  assert.equal(new Set(seen.map(take => take.context)).size, 1, "one audio context is reused");
+  assert.equal(h.contexts.length, 1, "switching conversations does not build another context");
+  assert.deepEqual(seen.map(take => take.buffered), [0, 0, 0], "the sample buffer starts empty");
+  assert.equal(h.requests.length, 3);
+  assert.equal(new Set(h.requests.map(request => request.body)).size, 3, "each upload is its own WAV");
+});
+
 test("zero samples report the pre-stop audio state and rebuild the context for the next take", async t => {
   const h = audioHarness("interrupted");
   t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
