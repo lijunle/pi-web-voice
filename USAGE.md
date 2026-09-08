@@ -204,8 +204,9 @@ speech backend for speech recognition. Browser microphone permissions still appl
 ### Starting and stopping
 
 Click the microphone next to image attachment, wait for `…` to become a clock, then
-speak. Click again to stop. Treat the clock as a microphone/audio-graph readiness cue;
-use capture diagnostics to assess sample collection.
+speak. Click again to stop. Each take opens a fresh microphone stream and a fresh
+`AudioContext`. Treat the clock as a microphone/audio-graph readiness cue; use capture
+diagnostics to assess sample collection.
 
 An explicit click or equivalent activation opens the microphone. While idle, pointer-down,
 held presses, and abandoned gestures keep it closed. Keyboard/VoiceOver activation,
@@ -216,8 +217,14 @@ until they settle, so the button can remain disabled with **Cancelling microphon
 while cleanup closes any late stream. Wait for cleanup before starting another take.
 Each page serializes its own opening requests; separate tabs have separate controllers.
 
-Stopping releases the microphone. With audio callbacks running, a take stops automatically
-after approximately **10 minutes**, then transcribes normally. Browser audio is 16 kHz
+Stopping releases the microphone, disconnects the audio graph, and requests context
+closure. Before creating another context, an opening waits up to three seconds for a
+previous close to settle; activating the fresh context also has a three-second resume
+bound. A timeout releases the new microphone and reports a client audio error. Each take
+includes fresh-context setup in its opening time.
+
+With audio callbacks running, a take stops automatically after approximately
+**10 minutes**, then transcribes normally. Browser audio is 16 kHz
 mono PCM WAV; a full-length take is about 19.2 MB, below the 25 MiB server upload ceiling.
 Each upstream fetch has a 10-minute timeout until response headers arrive. Body reading
 continues outside that timer, and a compatibility fallback starts another timed attempt,
@@ -398,14 +405,30 @@ Use request evidence to locate the failure and diagnose provider availability se
 
 ### Safari after backgrounding or switching tabs
 
-The maintainer validates pi-web-voice through long-term daily use on iPhone Safari.
-For audio interruptions, the recorder resumes interrupted/suspended contexts, replaces
-closed contexts, and rebuilds the context after zero captured samples.
+The maintainer uses pi-web-voice on iPhone Safari and as an installed home-screen web
+app (PWA). Each take owns a new audio context, and Stop closes it. A fresh context can
+still need a bounded resume before capture. Treat this lifecycle as an isolation measure;
+real-device use determines whether it prevents a particular browser audio failure.
 
-Try recording again after a client-side capture error. If it persists, recover any
-pending take, then close and reopen the page. Keep website data intact during these
-initial recovery steps. Reopening recreates audio state; use script/request evidence
-when investigating caching. Reload an open page to execute updated client code.
+The iOS 26.6.1 home-screen PWA report describes repeated zero-sample errors while the
+clock advances and the pre-stop context reports `running`. Switching the app to the
+background and returning restores recording without an observed page reload. This is
+a reproduction report, rather than confirmation of a specific WebKit defect or fix.
+The maintainer confirms normal voice input with per-take contexts in the
+[2026-09-08 validation](DEVELOPMENT.md#manual-verification); continuing daily use assesses
+recurrence of the intermittent failure.
+
+After a client capture error, stop recording, switch the app to the background, return,
+and try a new take. Foregrounding alone keeps the microphone closed. If capture still
+fails, recover any pending take, then close and reopen the page. Keep website data intact
+during these recovery steps. Use script/request evidence when investigating caching;
+reload an open page to execute updated client code.
+
+Assess authentication from requests made by the affected app. An installed iOS PWA has
+separate cookies and storage from Safari; a successful Safari login alone does not verify
+the PWA's session. Zero-sample errors remain local and produce no transcription POST or
+backend log. See [failure sources](#identify-the-failure-source) for upload/authentication
+and response errors.
 
 ## Logs and diagnostic endpoints
 
@@ -416,12 +439,14 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 `<uuid>` is a placeholder in these examples:
 
 ```text
-[pi-web-voice] 2026-09-07T20:32:00.000Z · request=<uuid> · provider=azure-openai · vad=auto · result=empty · 0.5s · 3.0s audio · 60 terms · 0 chars · en
-[pi-web-voice] 2026-09-07T20:33:00.000Z · request=<uuid> · provider=azure-openai · vad=auto · result=transcribed · 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
+[pi-web-voice] 2026-09-07T20:32:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=auto · result=empty · 0.5s · 3.0s audio · 60 terms · 0 chars · en
+[pi-web-voice] 2026-09-07T20:33:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=auto · result=transcribed · 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
 ```
 
 | Field | Interpretation |
 | --- | --- |
+| `audio_context=per-take` | The client declares one fresh context per take; Retry retains that original capture policy |
+| `audio_context=unspecified` | The request omits the recognized policy marker, as with an older open page or a direct API caller |
 | `vad=auto` | The selected backend/model branch is configured to request automatic VAD |
 | `vad=default` | The selected branch leaves VAD behavior to the provider's defaults |
 | `result=empty` | The response contains empty text; assess its cause from the audio and provider behavior |
@@ -432,14 +457,17 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 | Audio seconds / terms / chars / languages | Estimated duration from PCM bytes, vocabulary/text counts, and language hints |
 | `mic opened in …ms` | Accepted activation to microphone/audio-graph readiness |
 
-The hook computes the VAD label before upload validation, so it also appears on local
-upload rejections. It records request configuration; the outcome fields describe the
-result of processing.
+The hook computes the VAD and audio-context labels before upload validation, so both
+also appear on upload rejections and caught failures. The audio-context field accepts
+only the fixed `per-take` marker; all other values become `unspecified`. It describes a
+client-reported policy, not server verification of context creation or audio health.
+The VAD field records request configuration; outcome fields describe processing results.
 
 Microphone timing starts at accepted activation after replacement confirmation and ends
 at audio-graph readiness. Pointer-hold time is outside that interval. Retry reuses the
-original take's measurement while keeping the microphone closed. Compare timings that
-share the same measurement origin.
+original take's measurement while keeping the microphone and audio context closed.
+Fresh-context setup and any wait for a preceding close are part of this measurement.
+Compare timings with the same measurement origin and capture policy.
 
 Each uploaded retry is a **new POST and request ID**. Correlate requests through their
 IDs and the browser's request sequence; durations alone identify only an approximate
@@ -447,9 +475,9 @@ audio length. A lost response can follow successful server processing. Only uplo
 create transcription request logs; cached-text insertion and capture cancellation remain
 client-local.
 
-The request-log schema contains metadata only: timestamps, request IDs, provider/VAD/
-outcome/status fields, timings, counts, and language hints. Detailed errors remain part
-of the caller's response. Provider billing also applies to successful empty results.
+The request-log schema contains metadata only: timestamps, request IDs, audio-context
+policy, provider/VAD/outcome/status fields, timings, counts, and language hints. Detailed
+errors remain part of the caller's response. Provider billing also applies to successful empty results.
 
 ### Health and vocabulary inspection
 

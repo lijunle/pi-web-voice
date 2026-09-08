@@ -19,6 +19,7 @@ assert.ok(!process.env.NODE_OPTIONS, "use npm run test:retry so the installed ho
 
 const source = readFileSync(new URL("../public/inject.js", import.meta.url));
 const uploads = [];
+const capturePolicies = [];
 const waiting = new Map();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitFor(condition, description, timeoutMs = 8000) {
@@ -43,6 +44,7 @@ const server = http.createServer(async (req, res) => {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       uploads.push(Buffer.concat(chunks));
+      capturePolicies.push(url.searchParams.get("audio_context"));
       waiting.set(uploads.length, res);
       return;
     }
@@ -190,10 +192,14 @@ try {
     // access a device. Hold getUserMedia completion to reproduce the old race.
     await evaluate(`(() => {
       window.__guardMic=navigator.mediaDevices.getUserMedia;
+      window.__NativeAudioContext=window.AudioContext; window.__captureContexts=[];
+      window.AudioContext=class extends window.__NativeAudioContext {
+        constructor(...args){super(...args); window.__captureContexts.push(this);}
+      };
       window.__openingRequests=[]; window.__sources=[]; window.__peakLive=0;
       navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{
         window.__openingRequests.push(()=>{
-          const context=new AudioContext(), oscillator=context.createOscillator();
+          const context=new window.__NativeAudioContext(), oscillator=context.createOscillator();
           const destination=context.createMediaStreamDestination();
           oscillator.connect(destination); oscillator.start();
           window.__sources.push({context,oscillator,stream:destination.stream});
@@ -213,6 +219,7 @@ try {
     await evaluate('window.__openingRequests[0]()');
     await waitFor(() => evaluate('!window.__piWebVoice.ui.arming'), "cancelled opening cleanup");
     check(`${language}: a cancelled late stream is closed without uploading`, uploads.length === captureUpload - 1 && await evaluate('window.__sources[0].stream.getTracks().every(t=>t.readyState==="ended") && !window.__piWebVoice.recorder.active && !window.__piWebVoice.recorder.stream'));
+    await waitFor(() => evaluate('window.__captureContexts.length===1 && window.__captureContexts[0].state==="closed" && !window.__piWebVoice.recorder.context'), "cancelled context closure");
 
     await click("button"); // now a new recording is allowed
     await evaluate('window.__openingRequests[1]()');
@@ -222,10 +229,23 @@ try {
     await respond(captureUpload, 200, { text: "" });
     await idle();
     check(`${language}: stopping releases the stream and uploads captured audio`, uploads[captureUpload - 1].length > 44 && await evaluate('window.__sources.every(s=>s.stream.getTracks().every(t=>t.readyState==="ended")) && !window.__piWebVoice.recorder.stream'));
+    await waitFor(() => evaluate('window.__captureContexts.every(c=>c.state==="closed")'), "stopped context closure");
+    check(`${language}: idle retains no audio context or graph nodes`, await evaluate('window.__captureContexts.length===2 && !window.__piWebVoice.recorder.context && !window.__piWebVoice.recorder.source && !window.__piWebVoice.recorder.node && !window.__piWebVoice.recorder.mute'));
+
+    await click("button");
+    await evaluate('window.__openingRequests[2]()');
+    await waitFor(() => evaluate('window.__piWebVoice.recorder.active && window.__piWebVoice.recorder.chunks.length>0'), "next take samples");
+    check(`${language}: consecutive successful takes use distinct real contexts`, await evaluate('window.__captureContexts.length===3 && window.__piWebVoice.recorder.context===window.__captureContexts[2] && window.__captureContexts[1].state==="closed" && window.__peakLive===1'));
+    await click("button");
+    await respond(captureUpload + 1, 200, { text: "" });
+    await idle();
+    await waitFor(() => evaluate('window.__captureContexts.every(c=>c.state==="closed") && !window.__piWebVoice.recorder.closing'), "all capture contexts closed");
+    check(`${language}: fresh-context policy accompanies both real uploads`, capturePolicies.slice(captureUpload - 1, captureUpload + 1).every(value => value === "per-take") && uploads[captureUpload].length > 44);
     await evaluate(`(async () => {
       for(const s of window.__sources){s.oscillator.stop(); await s.context.close();}
       window.__piWebVoice.recorder.discardContext(); window.__piWebVoice.ui.clearToast();
       navigator.mediaDevices.getUserMedia=window.__guardMic;
+      window.AudioContext=window.__NativeAudioContext;
     })()`);
 
     const start = uploads.length;
@@ -296,6 +316,7 @@ try {
         && ui.pending===null && ui.toastElement===null && ui.retryButton===null;
     })()`));
     check(`${language}: every attempt uploads identical WAV bytes`, uploads[start].length === 96044 && uploads.slice(start, start + 3).every(bytes => bytes.equals(uploads[start])));
+    check(`${language}: Retry preserves the original capture-policy marker`, capturePolicies.slice(start, start + 3).every(value => value === "per-take"));
     check(`${language}: retry leaves the microphone closed and terminal text untouched`, await evaluate('window.__micOpens===0 && !window.__piWebVoice.recorder.stream && document.querySelector(".xterm-helper-textarea").value==="Leave the terminal alone"'));
 
     const localMessage = await evaluate(`(async () => {

@@ -93,7 +93,7 @@ test("empty responses log requested VAD, outcome, UTC time and a per-request ID"
   for (const [index, response] of [first, second].entries()) {
     assert.match(h.logs[index], /^\[pi-web-voice\] \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/);
     assert.ok(h.logs[index].includes(`request=${requestId(response)}`));
-    assert.match(h.logs[index], /provider=azure-openai · vad=auto · result=empty/);
+    assert.match(h.logs[index], /audio_context=unspecified · provider=azure-openai · vad=auto · result=empty/);
     assert.match(h.logs[index], /3\.0s audio · 0 terms · 0 chars · zh\/en/);
     assert.doesNotMatch(h.logs[index], /mic opened|filtered|blocked/);
     assert.equal(h.requests[index].get("chunking_strategy"), "auto");
@@ -103,13 +103,15 @@ test("empty responses log requested VAD, outcome, UTC time and a per-request ID"
 
 test("nonempty results log counts and microphone wait, never the transcript", async (t) => {
   const h = await harness(t, { body: { text: privateText } });
-  const response = await h.post(audio, "?wait=340");
+  const response = await h.post(audio, "?wait=340&audio_context=per-take");
   assert.equal(response.body.text, privateText);
   assert.equal(response.status, 200);
   assert.ok(h.logs[0].includes(`request=${requestId(response)}`));
   assert.match(h.logs[0], /vad=auto · result=transcribed/);
   assert.ok(h.logs[0].includes(`${privateText.length} chars`));
   assert.match(h.logs[0], /mic opened in 340ms$/);
+  assert.match(h.logs[0], /audio_context=per-take/);
+  assert.equal(h.requests[0].get("audio_context"), null, "capture policy stays out of speech-service requests");
   assert.doesNotMatch(h.logs.join("\n"), /PRIVATE_|speech\.example/);
 });
 
@@ -145,7 +147,7 @@ test("manual retries of the same audio log each outcome separately without expos
     });
   });
   const bytes = Buffer.concat([audio, Buffer.from("PRIVATE_AUDIO_do_not_log")]);
-  const query = "?session=PRIVATE_SESSION&cwd=%2FPRIVATE_PROJECT&wait=340";
+  const query = "?session=PRIVATE_SESSION&cwd=%2FPRIVATE_PROJECT&wait=340&audio_context=per-take";
   const responses = [];
   for (let attempt = 0; attempt < 3; attempt += 1) responses.push(await h.post(bytes, query));
 
@@ -156,6 +158,7 @@ test("manual retries of the same audio log each outcome separately without expos
   const records = [...h.errors, ...h.logs];
   for (const [index, response] of responses.entries()) {
     assert.ok(records[index].includes(`request=${requestId(response)}`));
+    assert.match(records[index], /audio_context=per-take/);
     assert.deepEqual(Buffer.from(await h.requests[index].get("file").arrayBuffer()), bytes);
   }
   assert.match(h.errors[0], /result=error.*upstream_status=503$/);
@@ -231,12 +234,23 @@ test("non-binary request chunks reject through the route instead of escaping str
 
 test("a zero-byte upload is logged as rejected without calling the speech service", async (t) => {
   const h = await harness(t);
-  const response = await h.post(Buffer.alloc(0));
+  const response = await h.post(Buffer.alloc(0), "?audio_context=per-take");
   assert.equal(response.status, 400);
   assert.equal(response.body.error, "empty audio");
   assert.ok(h.logs[0].includes(`request=${requestId(response)}`));
   assert.match(h.logs[0], /result=rejected · reason=empty-audio$/);
+  assert.match(h.logs[0], /audio_context=per-take/);
   assert.equal(h.requests.length, 0);
+});
+
+test("unrecognized capture-policy values stay unspecified and cannot inject log content", async t => {
+  const h = await harness(t);
+  for (const value of ["", "reused", "PER-TAKE", "PRIVATE_TOKEN\nforged-log", "per-take\u0000"]) {
+    const response = await h.post(audio, `?audio_context=${encodeURIComponent(value)}`);
+    assert.equal(response.status, 200);
+    assert.match(h.logs.at(-1), /audio_context=unspecified/);
+  }
+  assert.doesNotMatch(h.logs.join("\n"), /PRIVATE_|forged-log|reused|PER-TAKE|\u0000/);
 });
 
 test("untrusted microphone wait values cannot inject text into the log", async (t) => {

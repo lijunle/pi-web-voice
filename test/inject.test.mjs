@@ -160,7 +160,7 @@ for (const text of ["", " \n\t "]) {
     h.composer.setSelectionRange(2, 5);
     await h.ui.stop();
     assert.equal(h.requests.length, 1, "no local duration or loudness gate replaces service VAD");
-    assert.equal(h.requests[0].url, "/__voice/transcribe");
+    assert.equal(h.requests[0].url, "/__voice/transcribe?audio_context=per-take");
     assert.equal(h.requests[0].body.size, 44 + 3 * 16000 * 2);
     assert.equal(h.composer.value, "Keep my draft");
     assert.equal(h.composer.selectionStart, 2);
@@ -225,7 +225,7 @@ for (const [name, respond, prefix] of [
     await h.ui.retry();
     assert.equal(h.requests.length, 3);
     for (const request of h.requests) {
-      assert.equal(request.url, "/__voice/transcribe?session=original+session&wait=321");
+      assert.equal(request.url, "/__voice/transcribe?session=original+session&wait=321&audio_context=per-take");
       assert.equal(request.body, take.wav, "same Blob, not a new recording");
       assert.equal(request.method, "POST");
       assert.equal(request.headers["content-type"], "audio/wav");
@@ -715,10 +715,11 @@ function audioHarness(state = "running", resumeMode = "resolve", options = {}) {
   const contexts = [], tracks = [];
   h.window.AudioContext = class {
     constructor() {
-      this.state = "running";
+      this.state = state === "missing" ? "running" : state;
       this.sampleRate = 48000;
       this.destination = {};
-      this.resumes = this.closes = 0;
+      this.resumes = this.closes = this.suspends = 0;
+      this.nodes = [];
       contexts.push(this);
     }
     async resume() {
@@ -728,35 +729,39 @@ function audioHarness(state = "running", resumeMode = "resolve", options = {}) {
       if (resumeMode === "resolve") this.state = "running";
     }
     async close() { this.closes += 1; this.state = "closed"; }
-    async suspend() { this.state = "suspended"; }
-    createMediaStreamSource() { return { connect() {} }; }
-    createScriptProcessor() { return { connect() {}, disconnect() {} }; }
-    createGain() { return { gain: {}, connect() {} }; }
+    async suspend() { this.suspends += 1; this.state = "suspended"; }
+    createNode(kind) {
+      const node = {
+        kind, gain: {}, connections: [], disconnects: 0,
+        connect(target) { this.connections.push(target); },
+        disconnect() { this.disconnects += 1; this.connections = []; },
+      };
+      this.nodes.push(node);
+      return node;
+    }
+    createMediaStreamSource() { return this.createNode("source"); }
+    createScriptProcessor() { return this.createNode("processor"); }
+    createGain() { return this.createNode("mute"); }
   };
   h.navigator.mediaDevices = { getUserMedia: async () => {
     const track = { readyState: "live", stop() { this.readyState = "ended"; } };
     tracks.push(track);
     return { getTracks: () => [track] };
   } };
-  if (state !== "missing") {
-    h.recorder.context = new h.window.AudioContext();
-    h.recorder.context.state = state;
-  }
   h.ui.state = "idle";
   h.recorder.active = false;
   h.recorder.chunks = [];
   return { ...h, contexts, tracks };
 }
 
-for (const state of ["missing", "running", "suspended", "interrupted", "closed"]) {
-  test(`microphone opening handles an AudioContext that is ${state}`, async () => {
+for (const state of ["running", "suspended", "interrupted"]) {
+  test(`microphone opening activates a fresh AudioContext initially ${state}`, async () => {
     const h = audioHarness(state);
-    const original = h.recorder.context;
+    assert.equal(h.contexts.length, 0);
     const stream = await h.recorder.open();
+    assert.equal(h.contexts.length, 1);
     assert.equal(h.recorder.context.state, "running");
-    assert.equal(h.recorder.context.resumes, ["suspended", "interrupted"].includes(state) ? 1 : 0);
-    if (["missing", "closed"].includes(state)) assert.notEqual(h.recorder.context, original);
-    else assert.equal(h.recorder.context, original);
+    assert.equal(h.recorder.context.resumes, state === "running" ? 0 : 1);
     assert.equal(h.timers.size, 0);
     stream.getTracks().forEach(track => track.stop());
     h.recorder.discardContext();
@@ -803,13 +808,13 @@ test("pointer presses, long holds and abandoned touches never open the microphon
   assert.equal("warm" in h.recorder, false);
 });
 
-test("click-only startup still resumes an interrupted context", async t => {
+test("click-only startup activates a fresh context even if it starts interrupted", async t => {
   const h = audioHarness("interrupted");
   mountToolbar(h);
   t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
   h.ui.button.dispatchEvent(new Event("pointerdown"));
   assert.equal(h.tracks.length, 0);
-  assert.equal(h.recorder.context.resumes, 0);
+  assert.equal(h.contexts.length, 0);
   h.ui.button.dispatchEvent(new Event("click"));
   assert.equal(h.ui.arming, true);
   await new Promise(resolve => setImmediate(resolve));
@@ -847,7 +852,11 @@ for (const stage of ["microphone", "audio resume"]) {
       const mic = delayedMicrophone(h);
       const activation = deferred();
       if (stage === "audio resume") {
-        h.recorder.context.resume = async function () { await activation.promise; this.state = "running"; };
+        h.window.AudioContext.prototype.resume = async function () {
+          this.resumes += 1;
+          if (this === h.contexts[0]) await activation.promise;
+          this.state = "running";
+        };
       }
       t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
       const press = () => {
@@ -881,6 +890,8 @@ for (const stage of ["microphone", "audio resume"]) {
       assert.equal(h.ui.button.attributes["aria-busy"], "false");
       assert.equal(h.recorder.active, false);
       assert.equal(h.recorder.stream, null);
+      assert.equal(h.recorder.context, null);
+      assert.ok(h.contexts.every(context => context.closes === 1 && context.suspends === 0));
       assert.ok(h.tracks.every(track => track.readyState === "ended"));
       assert.equal(h.requests.length, 0, "cancelled openings never upload audio");
       assert.deepEqual(h.notices, []);
@@ -929,10 +940,10 @@ test("microphone wait metadata measures click-to-ready, excluding the pointer ho
   assert.equal(h.ui.waitedMs, 1200);
   h.recorder.chunks = [new Float32Array(128)];
   await h.ui.stop();
-  assert.equal(h.requests[0].url, "/__voice/transcribe?wait=1200");
+  assert.equal(h.requests[0].url, "/__voice/transcribe?wait=1200&audio_context=per-take");
 });
 
-test("consecutive takes use a fresh microphone stream, one page audio context and a clean buffer", async t => {
+test("consecutive takes use fresh streams and contexts with clean buffers, even in the same conversation", async t => {
   const h = audioHarness("missing");
   mountToolbar(h);
   t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
@@ -953,13 +964,23 @@ test("consecutive takes use a fresh microphone stream, one page audio context an
     h.ui.state = "recording";
     await h.ui.stop();
     assert.equal(h.recorder.stream, null, "the microphone is released on stop");
+    assert.equal(h.recorder.context, null, "no idle context is retained");
+    assert.equal(h.recorder.node, null);
+    assert.equal(h.recorder.source, null);
+    assert.equal(h.recorder.mute, null);
   }
 
   assert.equal(new Set(seen.map(take => take.stream)).size, 3, "each take gets its own MediaStream");
   assert.equal(h.tracks.length, 3);
   assert.ok(h.tracks.every(track => track.readyState === "ended"), "no stream is left listening");
-  assert.equal(new Set(seen.map(take => take.context)).size, 1, "one audio context is reused");
-  assert.equal(h.contexts.length, 1, "switching conversations does not build another context");
+  assert.equal(new Set(seen.map(take => take.context)).size, 3, "each take gets its own AudioContext");
+  assert.equal(h.contexts.length, 3);
+  for (const context of h.contexts) {
+    assert.equal(context.closes, 1);
+    assert.equal(context.suspends, 0, "stop closes rather than suspends");
+    assert.ok(context.nodes.every(node => node.disconnects === 1 && node.connections.length === 0));
+    assert.equal(context.nodes.find(node => node.kind === "processor").onaudioprocess, null);
+  }
   assert.deepEqual(seen.map(take => take.buffered), [0, 0, 0], "the sample buffer starts empty");
   assert.equal(h.requests.length, 3);
   assert.equal(new Set(h.requests.map(request => request.body)).size, 3, "each upload is its own WAV");
@@ -968,6 +989,7 @@ test("consecutive takes use a fresh microphone stream, one page audio context an
 test("zero samples report the pre-stop audio state and rebuild the context for the next take", async t => {
   const h = audioHarness("interrupted");
   t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); h.recorder.discardContext(); });
+  h.recorder.context = new h.window.AudioContext();
   h.ui.state = "recording";
   h.recorder.active = true;
   await h.ui.stop();
@@ -979,4 +1001,250 @@ test("zero samples report the pre-stop audio state and rebuild the context for t
   assert.equal(h.contexts.length, 2);
   assert.equal(h.recorder.context.state, "running");
   assert.equal(h.recorder.active, true);
+});
+
+for (const state of ["running", "suspended", "interrupted", "closed"]) {
+  test(`a leftover ${state} context is closed, never reused`, async () => {
+    const h = audioHarness();
+    const old = h.recorder.context = new h.window.AudioContext();
+    old.state = state;
+    const stream = await h.recorder.open();
+    assert.notEqual(h.recorder.context, old);
+    assert.equal(h.contexts.length, 2);
+    assert.equal(old.closes, 1);
+    assert.equal(old.resumes, 0);
+    assert.equal(h.recorder.context.state, "running");
+    stream.getTracks().forEach(track => track.stop());
+    h.recorder.discardContext();
+  });
+}
+
+test("old processor callbacks cannot append samples to a new take", async t => {
+  const h = audioHarness("suspended");
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+  const input = new Float32Array(4096).fill(0.25);
+  const event = { inputBuffer: { getChannelData: () => input } };
+  await h.ui.start();
+  const first = h.recorder.node;
+  const lateCallback = first.onaudioprocess;
+  lateCallback(event);
+  await h.ui.stop();
+  assert.equal(first.onaudioprocess, null);
+  assert.equal(h.recorder.context, null);
+
+  await h.ui.start();
+  lateCallback(event);
+  assert.equal(h.recorder.chunks.length, 0, "ignore a queued callback from the previous graph");
+  h.recorder.node.onaudioprocess(event);
+  assert.equal(h.recorder.chunks.length, 1);
+  await h.ui.stop();
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[0].body.size, 44 + Math.round(4096 / 3) * 2);
+  assert.equal(h.requests[1].body.size, h.requests[0].body.size);
+  assert.ok(h.contexts.every(context => context.resumes === 1 && context.closes === 1 && context.suspends === 0));
+});
+
+test("a partial graph startup failure releases the stream, nodes and context", async () => {
+  const h = audioHarness();
+  h.window.AudioContext.prototype.createGain = () => { throw new Error("Graph unavailable"); };
+  await h.ui.start();
+  assert.equal(h.ui.state, "idle");
+  assert.equal(h.ui.arming, false);
+  assert.equal(h.recorder.context, null);
+  assert.equal(h.recorder.stream, null);
+  assert.equal(h.recorder.source, null);
+  assert.equal(h.recorder.node, null);
+  assert.equal(h.contexts[0].closes, 1);
+  assert.ok(h.contexts[0].nodes.every(node => node.disconnects === 1));
+  assert.ok(h.tracks.every(track => track.readyState === "ended"));
+  assert.match(h.notices[0], /Graph unavailable/);
+  assert.equal(h.requests.length, 0);
+});
+
+test("teardown releases the remaining resources even when a node or track throws", async t => {
+  const h = audioHarness();
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+  await h.ui.start();
+  const { source, node, mute, context, stream } = h.recorder;
+  source.disconnect = () => { throw new Error("Disconnect failed"); };
+  const [first] = stream.getTracks();
+  first.stop = function () { this.readyState = "ended"; throw new Error("Stop failed"); };
+  const second = { readyState: "live", stop() { this.readyState = "ended"; } };
+  stream.getTracks = () => [first, second];
+  h.recorder.chunks = [new Float32Array(128)];
+  await h.ui.stop();
+  h.recorder.stop(); // repeated cleanup is harmless
+  assert.equal(node.disconnects, 1);
+  assert.equal(mute.disconnects, 1);
+  assert.equal(node.onaudioprocess, null);
+  assert.equal(second.readyState, "ended");
+  assert.equal(context.closes, 1);
+  assert.equal(context.suspends, 0);
+  assert.equal(h.recorder.context, null);
+  assert.equal(h.recorder.stream, null);
+  assert.equal(h.requests.length, 1, "cleanup errors do not discard a captured take");
+});
+
+test("cancellation while a previous context closes keeps one opening and preserves pending audio", async t => {
+  const h = audioHarness();
+  mountToolbar(h);
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+  await h.ui.start();
+  const context = h.recorder.context;
+  const closed = deferred();
+  context.close = async function () { this.closes += 1; await closed.promise; this.state = "closed"; };
+  h.recorder.chunks = [new Float32Array(128)];
+  h.setResponse(networkFailure);
+  await h.ui.stop();
+  const take = h.ui.pending;
+  assert.equal(h.recorder.context, null);
+  assert.ok(h.recorder.closing);
+  const starting = h.ui.start();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.contexts.length, 1, "wait for close before creating a new context");
+  assert.equal(h.tracks.length, 2);
+  assert.equal(h.ui.arming, true);
+  await h.ui.stop();
+  await h.ui.start();
+  assert.equal(h.tracks.length, 2, "cancellation holds the opening guard");
+  closed.resolve();
+  await starting;
+  assert.equal(h.ui.arming, false);
+  assert.equal(h.ui.state, "idle");
+  assert.equal(h.ui.pending, take);
+  assert.equal(h.recorder.context, null);
+  assert.ok(h.tracks.every(track => track.readyState === "ended"));
+  assert.ok(h.contexts.every(context => context.closes === 1));
+  assert.equal(h.requests.length, 1);
+});
+
+test("a stalled close bounds the next opening, releases its microphone and retains the old take", async t => {
+  const h = audioHarness();
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+  await h.ui.start();
+  const context = h.recorder.context;
+  const closed = deferred();
+  context.close = async function () { this.closes += 1; await closed.promise; this.state = "closed"; };
+  h.recorder.chunks = [new Float32Array(128)];
+  h.setResponse(networkFailure);
+  await h.ui.stop();
+  const take = h.ui.pending;
+  const starting = h.ui.start();
+  await new Promise(resolve => setImmediate(resolve));
+  h.advanceTime(3000);
+  await starting;
+  assert.equal(h.ui.state, "idle");
+  assert.equal(h.ui.arming, false);
+  assert.equal(h.ui.pending, take);
+  assert.equal(h.recorder.context, null);
+  assert.equal(h.contexts.length, 1, "a timed-out close cannot allocate overlapping contexts");
+  assert.ok(h.tracks.every(track => track.readyState === "ended"));
+  assert.match(h.notices.at(-1), /^\[Client · audio\]/);
+  assert.equal(h.requests.length, 1);
+  closed.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.contexts.length, 1, "late close completion does not start capture");
+  assert.equal(h.recorder.closing, null);
+  await h.ui.start();
+  assert.equal(h.contexts.length, 2);
+  assert.equal(h.recorder.active, true);
+});
+
+for (const mode of ["throw", "reject"]) {
+  test(`a close that fails with ${mode} remains best effort and never reuses the context`, async t => {
+    const h = audioHarness();
+    t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+    await h.ui.start();
+    const first = h.recorder.context;
+    first.close = () => {
+      first.closes += 1;
+      if (mode === "throw") throw new Error("Close failed");
+      return Promise.reject(new Error("Close failed"));
+    };
+    h.recorder.chunks = [new Float32Array(128)];
+    await h.ui.stop();
+    assert.equal(h.recorder.context, null);
+    await h.ui.start();
+    assert.notEqual(h.recorder.context, first);
+    assert.equal(h.contexts.length, 2);
+    assert.equal(first.closes, 1);
+    assert.equal(first.suspends, 0);
+    assert.equal(h.requests.length, 1);
+  });
+}
+
+test("opening timing includes a preceding close and fresh context activation", async t => {
+  let now = 0;
+  const h = audioHarness("suspended", "resolve", { now: () => now });
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+  await h.ui.start();
+  const first = h.recorder.context;
+  const closed = deferred();
+  first.close = async function () { this.closes += 1; await closed.promise; this.state = "closed"; };
+  h.recorder.chunks = [new Float32Array(128)];
+  await h.ui.stop();
+  now = 800;
+  const starting = h.ui.start();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.contexts.length, 1);
+  now = 2000;
+  closed.resolve();
+  await starting;
+  assert.equal(h.contexts.length, 2);
+  assert.equal(h.contexts[1].resumes, 1);
+  assert.equal(h.ui.waitedMs, 1200);
+  h.recorder.chunks = [new Float32Array(128)];
+  await h.ui.stop();
+  assert.equal(h.requests[1].url, "/__voice/transcribe?wait=1200&audio_context=per-take");
+});
+
+test("a late resume failure after timeout cannot interfere with a subsequent fresh context", async t => {
+  const h = audioHarness("suspended");
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+  const resume = deferred();
+  h.window.AudioContext.prototype.resume = async function () {
+    this.resumes += 1;
+    if (this === h.contexts[0]) await resume.promise;
+    if (this.state !== "closed") this.state = "running";
+  };
+  const starting = h.ui.start();
+  await new Promise(resolve => setImmediate(resolve));
+  h.advanceTime(3000);
+  await starting;
+  assert.equal(h.recorder.context, null);
+  assert.equal(h.contexts[0].closes, 1);
+  assert.equal(h.tracks[0].readyState, "ended");
+  await h.ui.start();
+  const current = h.recorder.context;
+  resume.reject(new Error("Late activation failure"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.recorder.context, current);
+  assert.equal(current, h.contexts[1]);
+  assert.equal(current.state, "running");
+  assert.equal(current.closes, 0);
+  assert.equal(h.recorder.active, true);
+  assert.equal(h.recorder.chunks.length, 0);
+  assert.equal(h.requests.length, 0);
+});
+
+test("retry after a real take keeps its closed context closed and reuses its capture-policy metadata", async t => {
+  const h = audioHarness();
+  t.after(() => { clearInterval(h.ui.timer); h.recorder.stop(); });
+  await h.ui.start();
+  h.recorder.chunks = [new Float32Array(128)];
+  h.setResponse(networkFailure);
+  await h.ui.stop();
+  const take = h.ui.pending;
+  assert.equal(h.contexts[0].closes, 1);
+  assert.equal(h.recorder.context, null);
+  h.window.AudioContext = class { constructor() { assert.fail("Retry cannot open an audio context"); } };
+  h.setResponse(() => success("Recovered"));
+  await h.ui.retry();
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].url, take.url);
+  assert.equal(h.requests[1].body, take.wav);
+  assert.equal(new URL(take.url, "https://example.invalid").searchParams.get("audio_context"), "per-take");
+  assert.equal(h.contexts.length, 1);
+  assert.equal(h.recorder.context, null);
+  assert.equal(h.tracks.length, 1);
 });

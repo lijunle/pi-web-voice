@@ -21,9 +21,9 @@
   // transcription at 16 kHz mono PCM (about 19.2 MB), while still putting a
   // finite bound on an accidentally abandoned recording.
   const MAX_SECONDS = 10 * 60;
-  // Safari can leave resume() pending after an interruption. Do not leave the
-  // user stuck at "opening" with an owned microphone indefinitely.
-  const AUDIO_RESUME_MS = 3000;
+  // Bound each wait for the previous context to close or a fresh one to resume.
+  // A stalled browser audio operation must not keep an owned microphone forever.
+  const AUDIO_STATE_MS = 3000;
   const SHORTCUT = "mod+shift+v";
 
   const SAMPLE_RATE = 16000;
@@ -256,46 +256,62 @@
     return new Blob([buffer], { type: "audio/wav" });
   }
 
+  async function waitForAudioState(operation) {
+    let timer;
+    try {
+      await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new VoiceError(T.audioFailed)), AUDIO_STATE_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function stopTracks(stream) {
+    for (const track of stream?.getTracks() || []) {
+      try { track.stop(); } catch { /* release the remaining tracks too */ }
+    }
+  }
+
   const recorder = {
     active: false,
     stream: null,
-    // Reused between healthy takes; failed/empty capture discards it.
-    // Constructing one makes the OS open an audio session; resuming a
-    // suspended one does not, so later takes normally reach samples sooner.
-    // The microphone stream is not kept — it lights the recording indicator
-    // and is released on every stop.
+    // One stream and one context per take. Idle pages retain neither; stopping
+    // closes the context rather than suspending it for the next activation.
     context: null,
+    closing: null,
+    source: null,
     node: null,
+    mute: null,
     chunks: [],
     startedAt: 0,
 
     discardContext() {
       const context = this.context;
       this.context = null;
-      try { context?.close()?.catch(() => {}); } catch { /* best effort */ }
+      if (!context) return;
+      try {
+        const closed = context.close();
+        const closing = Promise.all([this.closing, Promise.resolve(closed).catch(() => {})])
+          .then(() => { if (this.closing === closing) this.closing = null; });
+        this.closing = closing;
+      } catch { /* closing is best effort, including already-closed contexts */ }
     },
 
-    async resumeContext() {
-      if (!this.context || this.context.state === "closed") {
-        this.context = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      const context = this.context;
-      let timer;
-      try {
-        if (context.state !== "running") {
-          // In particular, iOS Safari uses "interrupted" after tab switches,
-          // backgrounding and audio-device interruptions, not only "suspended".
-          await Promise.race([
-            context.resume(),
-            new Promise((_, reject) => {
-              timer = setTimeout(() => reject(new VoiceError(T.audioFailed)), AUDIO_RESUME_MS);
-            }),
-          ]);
-        }
-        if (context.state !== "running") throw new VoiceError(T.audioFailed);
-      } finally {
-        clearTimeout(timer);
-      }
+    async createContext() {
+      this.discardContext();
+      // Let a previous close settle before allocating another context. A
+      // timeout leaves its promise tracked; late cleanup cannot own a new take.
+      if (this.closing) await waitForAudioState(this.closing);
+      const context = new (window.AudioContext || window.webkitAudioContext)();
+      this.context = context;
+      // A newly created context may still need activation, including Safari's
+      // "interrupted" state. Never resume a context from an earlier take.
+      if (context.state !== "running") await waitForAudioState(context.resume());
+      if (context.state !== "running") throw new VoiceError(T.audioFailed);
     },
 
     /** Opens the microphone and the audio session, recording nothing yet. */
@@ -307,10 +323,10 @@
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       try {
-        await this.resumeContext();
+        await this.createContext();
         return stream;
       } catch (error) {
-        stream.getTracks().forEach((track) => track.stop());
+        stopTracks(stream);
         this.discardContext();
         throw error instanceof VoiceError ? error : new VoiceError(`${T.audioFailed}: ${error.message}`);
       }
@@ -321,42 +337,42 @@
       // opening/cancellation; there is no speculative stream to claim or retry.
       this.stream = await this.open();
 
-      const source = this.context.createMediaStreamSource(this.stream);
-      // ScriptProcessor is deprecated but is the only node supported by every
-      // browser without shipping a separate worklet module.
-      this.node = this.context.createScriptProcessor(4096, 1, 1);
+      const context = this.context;
+      this.source = context.createMediaStreamSource(this.stream);
+      // Keep the capture mechanism unchanged while testing per-take contexts.
+      // Retain all nodes for explicit, complete teardown on every exit path.
+      const node = this.node = context.createScriptProcessor(4096, 1, 1);
       this.chunks = [];
       this.startedAt = Date.now();
 
-      this.node.onaudioprocess = (event) => {
-        if (!this.active) return;
+      node.onaudioprocess = (event) => {
+        if (!this.active || this.node !== node) return;
         const input = event.inputBuffer.getChannelData(0);
-        this.chunks.push(downsample(input, this.context.sampleRate, SAMPLE_RATE));
+        this.chunks.push(downsample(input, context.sampleRate, SAMPLE_RATE));
         if ((Date.now() - this.startedAt) / 1000 > MAX_SECONDS) ui.stop();
       };
 
       // Route through a silent gain node so the graph runs without echoing
       // the microphone back to the speakers.
-      const mute = this.context.createGain();
-      mute.gain.value = 0;
-      source.connect(this.node);
-      this.node.connect(mute);
-      mute.connect(this.context.destination);
+      this.mute = context.createGain();
+      this.mute.gain.value = 0;
+      this.source.connect(node);
+      node.connect(this.mute);
+      this.mute.connect(context.destination);
 
       this.active = true;
     },
 
     stop() {
       this.active = false;
-      try {
-        this.node?.disconnect();
-        this.stream?.getTracks().forEach((track) => track.stop());
-        this.context?.suspend()?.catch(() => {});
-      } catch {
-        /* teardown is best effort */
+      if (this.node) this.node.onaudioprocess = null;
+      for (const node of [this.source, this.node, this.mute]) {
+        try { node?.disconnect(); } catch { /* release the remaining nodes too */ }
       }
-      this.node = null;
+      stopTracks(this.stream);
+      this.source = this.node = this.mute = null;
       this.stream = null;
+      this.discardContext();
 
       const total = this.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
       const merged = new Float32Array(total);
@@ -670,7 +686,6 @@
         await recorder.start();
       } catch (error) {
         recorder.stop();
-        recorder.discardContext();
         if (this.state !== "recording") return; // already pressed again
         this.state = "idle";
         const denied = error?.name === "NotAllowedError";
@@ -724,9 +739,8 @@
       const wav = recorder.stop();
       this.state = "idle";
       if (!wav) {
-        // A running-but-stalled Safari context can also yield no callbacks.
-        // Recreate it on the next take rather than requiring a page reload.
-        recorder.discardContext();
+        // Even a context reporting "running" can yield no samples. stop()
+        // closes it, just as it does for a successful or cancelled take.
         this.render();
         this.toast(`${T.captureEmpty} (AudioContext: ${audioState})`);
         return;
@@ -737,6 +751,7 @@
       const where = currentCwd();
       if (where) query.set("cwd", where);
       if (this.waitedMs) query.set("wait", String(this.waitedMs));
+      query.set("audio_context", "per-take");
       const suffix = query.toString() ? `?${query}` : "";
       this.pending = { wav, url: `${CONFIG.prefix}/transcribe${suffix}`, sessionId, cwd: where };
       return this.retry();

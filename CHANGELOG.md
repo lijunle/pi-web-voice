@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A validated `audio_context=per-take` capture-policy marker in transcription logs,
+  retained through Retry. Missing or unrecognized markers log as `unspecified` so
+  older open pages and direct callers are distinguishable without logging raw input.
+- Regression coverage for fresh contexts across consecutive takes, complete audio-graph
+  teardown, stale callbacks, closing waits/timeouts, cancellation, and log-marker privacy.
 - UTC timestamps, per-request UUIDs returned in `x-pi-voice-request-id`, and explicit
   provider, VAD, outcome, and upstream-status fields in transcription logs.
 - Manual **Retry** in the persistent error notice, reusing the same recording without
@@ -28,12 +33,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Remove cross-take AudioContext reuse: each recording creates a fresh context and
+  closes it on stop, cancellation, or failure instead of suspending it between takes.
+  This provides a lifecycle-isolation trial for reported iOS 26.6.1 home-screen PWA
+  zero-sample failures. On 2026-09-08, the maintainer confirmed normal voice input
+  after deployment; long-term recurrence testing remains open. Each take now pays
+  fresh-context setup latency, included in the existing microphone-opening timing.
+- Retain and disconnect all capture nodes, detach stopped processor handlers, and
+  ignore stale callbacks. A new context waits for preceding closure with a bounded
+  wait; failed cleanup keeps captured audio available and timed-out audio activation
+  releases its microphone. See [audio lifecycle](DEVELOPMENT.md#microphone-context-and-pending-take-lifecycle).
 - Azure OpenAI `gpt-transcribe` requests automatic VAD with `chunking_strategy=auto`,
   including keyword-to-prompt fallbacks, to address reproduced cases of vocabulary-biased
   text generated from silence.
 - Microphone capture starts only on click. Cancelled openings remain guarded until
   cleanup finishes, preventing rapid reactivation from opening a second stream in the
-  same page. Healthy audio-context reuse and keyboard access remain.
+  same page. Keyboard access and explicit activation remain.
 - `mic opened in …ms` measures accepted activation to audio readiness instead of starting
   at pointer-down. Retry retains the original recording's timing; each upload still
   receives its own request ID. See [Transcription logs](USAGE.md#transcription-logs).

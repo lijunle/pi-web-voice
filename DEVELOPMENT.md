@@ -81,7 +81,7 @@ separately when diagnosing a running service.
 | Route prefix | `/__voice` |
 | Capture format and maximum duration | 16 kHz mono PCM WAV; approximately 10 minutes |
 | Server upload ceiling / upstream fetch-to-headers timeout | 25 MiB / 10 minutes |
-| Audio-context resume timeout | 3 seconds |
+| Audio-context policy / close and resume waits | Fresh per take; up to 3 seconds for each wait |
 | Candidate cap / project history | 400 ranked terms / up to five recent sibling sessions |
 | Session read limits | Current session tail: 256 KiB; each sibling: at most 128 KiB |
 | Project header scan limit | First JSONL line, up to 64 KiB |
@@ -120,23 +120,32 @@ take. `recorder` owns the microphone stream, Web Audio nodes/context, and sample
 1. One accepted activation makes one microphone-opening attempt. Acquisition starts
    through the click/keyboard controller. Cancellation holds the guard until the
    outstanding request settles and cleanup closes any late stream.
-2. Each take gets a fresh `MediaStream`. A healthy `AudioContext` belongs to its page:
-   recording resumes it and stopping suspends it. Separate tabs own separate contexts.
+2. Each take gets a fresh `MediaStream` and `AudioContext`. After acquisition, opening
+   waits for any preceding context-close promise to settle before creating the context,
+   with a three-second bound. A fresh suspended/interrupted context gets its own bounded
+   resume. Timeout or failed activation releases the microphone.
 3. Capture resets the sample buffer and records via `ScriptProcessor`, downsampling to
    16 kHz through a silent gain path. The clock starts at graph readiness. Audio callbacks
    enforce the ten-minute wall-clock limit; clock rendering only displays elapsed time.
-4. Stop releases tracks, disconnects the processor, and merges chunks into a WAV.
-   Zero captured samples produce a client error and discard the context for a fresh
-   attempt. Failed activation also releases resources and discards the context.
+4. Stop releases tracks, clears the processor callback, disconnects all retained graph
+   nodes, requests context closure, and merges chunks into a WAV. Zero samples produce
+   a client error using the pre-cleanup context state. Success, cancellation, and failure
+   all discard the context. Per-resource teardown guards keep cleanup best effort;
+   rejected closes settle safely, while pending closes remain tracked for the next
+   opening. A late callback from an old processor cannot append to a new take.
 5. Stop snapshots the page's session ID and working directory alongside the WAV and
    timing in the pending take. Keep the same conversation open throughout recording,
    since a mid-recording switch can change this Stop-time destination. Retry uploads
    when text is unavailable and uses local insertion when the take holds cached text.
 
-Conversations in the same tab share a healthy audio context. Sample buffers reset per
-take, and pending data stays tied to its Stop-time conversation. Each page owns its
-opening guard. See [Recording and retry](USAGE.md#recording-and-retry) for replacement
-confirmation and page-memory retention behavior.
+Consecutive takes in the same conversation use distinct audio contexts. Sample buffers
+reset per take, and pending data stays tied to its Stop-time conversation. Each page
+owns its opening guard. Retry reuses the WAV and its `audio_context=per-take` policy
+marker while keeping audio resources closed. The server logs unrecognized or missing
+markers as `unspecified`, including requests from older open pages. This metadata is a
+client declaration rather than proof of healthy capture. See
+[Recording and retry](USAGE.md#recording-and-retry) for replacement confirmation and
+page-memory retention behavior.
 
 Composer lookup excludes xterm's hidden helper textarea and prefers the textarea near
 the mounted toolbar. Insertion uses the native textarea setter plus an input event so
@@ -303,18 +312,23 @@ an ephemeral debug port, while the integration script uses port 9333.
   conversation binding, cached-text recovery, replacement confirmation, and terminal isolation.
 - **Audio ownership:** abandoned pointer holds, delayed/cancelled starts and resumes, late
   success/failure cleanup, at most one live stream per page in covered sequences, fresh
-  streams with a reused page context, clean per-take buffers, and activation-based timing.
-- **Recovery and response contracts:** simulated running/suspended/interrupted/closed
-  contexts, failed/stalled/timed-out resumes, zero-sample reset, and client/server error
-  distinctions. Real `Response`/`ReadableStream` tests cover HTML/plaintext/empty bodies,
-  malformed/schema-invalid JSON, bad/missing content types, and response-read failures.
+  streams and contexts per take, full graph teardown, stale-callback isolation, clean
+  buffers, and activation-based timing. Closing waits serialize context creation and
+  cover cancellation, rejection, timeout, and late completion.
+- **Recovery and response contracts:** fresh running/suspended/interrupted contexts,
+  disposal of leftover contexts, failed/stalled/timed-out resumes, zero-sample cleanup,
+  capture-policy log validation, and client/server error distinctions. Real
+  `Response`/`ReadableStream` tests cover HTML/plaintext/empty bodies, malformed/schema-invalid
+  JSON, bad/missing content types, and response-read failures.
 
 The isolated retry browser fixture controls response timing and tests English desktop
 and Chinese 320 px mobile layouts. It checks persistent red errors, white underlined
 Retry text with a transparent background and zero border, keyboard focus, a minimum
 44 × 44 px touch target, long-message wrapping/scrolling, single-notice behavior, and
-cleanup/refresh. It also exercises generated Web Audio streams, mouse/keyboard interaction,
-HTML/plaintext/empty 502 responses, invalid/empty HTTP 200 responses, and a TCP response
+cleanup/refresh. It also checks distinct real audio contexts for consecutive takes,
+closure after success/cancellation, capture-policy metadata through Retry, generated
+Web Audio streams, mouse/keyboard interaction, HTML/plaintext/empty 502 responses,
+invalid/empty HTTP 200 responses, and a TCP response
 cut after 502 headers. Its response-reader guard enforces the single `text()` read path;
 recovery uses the retained WAV and inserts the transcript exactly once.
 
@@ -327,9 +341,24 @@ isolated retry suite makes exact transcript-insertion assertions.
 
 ### Manual verification
 
-The maintainer uses and validates pi-web-voice in long-term, everyday use on iPhone
-Safari. Manual validation also covers the deployed underlined Retry presentation and
-live backend VAD probes.
+The maintainer uses pi-web-voice on iPhone Safari and as an installed home-screen PWA.
+Manual validation also covers the deployed underlined Retry presentation and live
+backend VAD probes. The iOS 26.6.1 PWA report describes zero samples with a running
+context and recovery after a background/foreground transition.
+
+The **2026-09-08 validation record** covers the per-take-context implementation:
+
+- **iPhone home-screen PWA, iOS 26.6.1:** the maintainer confirms normal voice input
+  with the deployed implementation.
+- **Deployment:** the served client matches the checkout. Two observed Azure OpenAI
+  request logs report `audio_context=per-take` and `result=transcribed`; verification
+  uses existing request metadata and makes no additional live speech-service calls.
+- **Automated checks:** `npm run check` passes server type checking and 147 unit tests;
+  `npm run test:retry` passes 63 isolated Chromium checks with synthetic audio.
+
+Continue daily use to assess recurrence of the intermittent failure. The normal-input
+check establishes current functionality, while isolated Chromium checks verify lifecycle
+behavior rather than reproduce the reported iOS failure.
 
 For audio/UI changes, regression scenarios include tab switching, background/foreground
 transitions, permission cancellation, consecutive takes, resource release, and Retry.
@@ -376,10 +405,10 @@ guard until completion or cancellation cleanup. This keeps acquisition tied to u
 intent and makes ownership predictable across keyboard, touch, and accessibility input.
 Idle pointer gestures leave the microphone closed.
 
-Reuse a healthy page audio context to limit audio-session startup cost, while acquiring
-a fresh microphone stream and resetting sample buffers for each take. Measure opening
-time from accepted activation to graph readiness, and compare timings with that same
-measurement origin.
+Use a fresh microphone stream and audio context for each take, and reset its sample
+buffer. Measure opening time from accepted activation to graph readiness, including
+fresh-context setup and any wait for preceding closure. Compare timings that share the
+same measurement origin and reported capture policy.
 
 Keep the icon, clock element, and clock text node mounted while updating their properties.
 Stable hit-test targets let a mouse-down/up sequence complete across a clock tick,
@@ -388,11 +417,24 @@ keeping stop activation reliable.
 ### Safari recovery and response normalization
 
 [iOS Safari can leave an audio context interrupted](https://developer.mozilla.org/en-US/docs/Web/API/BaseAudioContext/state#resuming_interrupted_play_states_in_ios_safari).
-Resume interrupted/suspended contexts and require `running` before capture. Replace
-closed contexts and bound resume to three seconds. Failed activation or zero samples
-release resources and discard the context, giving another take a fresh start. Diagnose
-cache behavior separately with script/request evidence, since page reload also resets
-the audio lifecycle.
+Each take creates its own context, activates it with a bounded resume when needed, and
+requires `running` before graph setup. Stop closes the context on every path, including
+healthy takes. This avoids keeping suspended contexts across takes at the cost of fresh
+setup latency on each activation; real-device use evaluates the reliability trade-off.
+
+A `running` state alone does not guarantee samples. WebKit reports
+[#263627](https://bugs.webkit.org/show_bug.cgi?id=263627) and
+[#291892](https://bugs.webkit.org/show_bug.cgi?id=291892) describe related audio-lifecycle
+failures, including running contexts with stalled audio and standalone PWA behavior.
+Their playback symptoms are related evidence, not confirmation of the microphone
+failure's root cause. Keep the capture mechanism, readiness clock, and upload flow
+stable while evaluating the per-take-context policy.
+
+Diagnose page reload, foreground recovery, and authentication separately. An iOS
+home-screen web app has [separate cookies and storage from Safari](https://developer.apple.com/videos/play/wwdc2023/10120/).
+Use the affected app's own script/request evidence when investigating caching or Access
+sessions. Foreground transitions leave microphone acquisition tied to explicit activation.
+Client-local capture errors have no backend request log or diagnostic upload endpoint.
 
 Read response text once, then parse JSON, so diagnostics preserve HTTP status and
 identify the response format. Display direct non-JSON failures as bounded format
