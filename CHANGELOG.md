@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before replacing a pending recording.
 - Isolated browser retry coverage and expanded regressions for audio ownership,
   response failures, composer recovery, and metadata-only request logs.
+- A concise `AGENTS.md` with documentation entry points, implementation/privacy/test
+  principles, and writing rules for positive expression and present-tense prose.
 
 ### Changed
 
@@ -40,6 +42,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [development guide](DEVELOPMENT.md), and this changelog. Corrected configuration,
   vocabulary, and startup-log descriptions; clarified stop-time conversation binding,
   timeout and response-handling boundaries; and recorded the maintainer's iPhone Safari use.
+- Reworded the guides around current behavior and positive actions, including design
+  rationale and validation results. CHANGELOG remains the sole exception for historical
+  and before/after narratives.
 
 ### Fixed
 

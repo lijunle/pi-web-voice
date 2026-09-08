@@ -7,13 +7,13 @@ details belong in [DEVELOPMENT.md](DEVELOPMENT.md).
 ## Installation and requirements
 
 The runtime requires Node.js 20+, a working `pi-web` command, and a browser that supports
-microphone capture and Web Audio. The documented integration was verified against
-pi-web `0.9.0` (pi `0.85.1`); other versions may require compatibility checks.
+microphone capture and Web Audio. The integration's compatibility baseline is pi-web
+`0.9.0` (pi `0.85.1`); check compatibility when selecting another version.
 Browser-based developer tests have additional requirements, described in
 [Development and testing](DEVELOPMENT.md#development-and-testing).
 
 ```bash
-npm install -g @agegr/pi-web   # if pi-web is not already installed
+npm install -g @agegr/pi-web   # install the pi-web host as needed
 npm install -g pi-web-voice
 pi-web-voice init
 ```
@@ -25,9 +25,9 @@ pi-web-voice doctor
 pi-web-voice
 ```
 
-There is no build step and no third-party runtime dependency. `npx pi-web-voice` also
-works when pi-web is already installed. All non-command arguments pass through to
-pi-web; for example, `pi-web-voice -p 8080`.
+The package runs directly from source using Node.js and browser APIs. `npx pi-web-voice`
+also works with an existing pi-web installation. Launcher arguments pass through to
+pi-web, except its own commands and help options; for example, `pi-web-voice -p 8080`.
 
 ### Install from source
 
@@ -48,24 +48,24 @@ Configure the backend and run `doctor` and `pi-web-voice` as above.
 
 Credentials and settings live in `~/.pi/agent/voice.env`, using the home directory of
 the user running the service. `pi-web-voice init` creates the file with mode `0600` and
-leaves an existing file untouched.
+preserves an existing file.
 
-The hook uses a small, private line parser; it does **not** load the file into
-`process.env`. It accepts `KEY=value`, optional `export`, matching outer single/double
-quotes, blank lines, and full-line `#` comments. It is not a shell: do not use variable
-expansion, command substitution, or trailing inline comments.
+The hook parses the file into a private object, separate from `process.env`. Write
+literal `KEY=value` entries: the parser accepts optional `export`, matching outer
+single/double quotes, blank lines, and full-line `#` comments. Supply values as literal
+text and put comments on their own lines.
 
 An existing environment value takes precedence over the file, including an empty
-exported value. Values read from the file are cached in the process: **restart the
-service after changing configuration**. On Unix, keep its permissions restricted:
+exported value. The process caches file values: **restart the service after changing
+configuration**. On Unix, keep file permissions restricted:
 
 ```bash
 chmod 600 ~/.pi/agent/voice.env
 ```
 
-Use the file rather than putting secret values in command lines or shell history.
-Credentials exported into the service environment can also be inherited by its children;
-the private-file loader does not remove values you exported yourself.
+Store keys in this file so command lines and shell history stay free of credential
+values. Exported service-environment values retain their precedence and remain available
+to child processes; the private-file loader leaves existing exports intact.
 
 ### Settings reference
 
@@ -84,13 +84,13 @@ Keep API keys secret and redact private resource details before sharing configur
 | `OPENAI_API_KEY` | OpenAI-compatible service key; may be empty for a local service |
 | `PI_VOICE_OPENAI_MODEL` | OpenAI-compatible model; defaults to `whisper-1` |
 
-Without an explicit provider, nonempty keys select Azure Speech first, then Azure
-OpenAI, then OpenAI; no key selects mock. Setting only an endpoint does not select a
-backend. Set `PI_VOICE_PROVIDER` to break a tie or to use a keyless local service.
+When `PI_VOICE_PROVIDER` is empty, nonempty keys select Azure Speech first, then Azure
+OpenAI, then OpenAI, with mock as the fallback. Set `PI_VOICE_PROVIDER` for explicit
+selection, especially with a keyless local service. Endpoint settings supply the
+destination for the selected backend.
 
-Route prefix, API-version defaults, recording/upload limits, and vocabulary budgets are
-implementation constants, not additional environment switches. See
-[Runtime constants](DEVELOPMENT.md#runtime-constants).
+The implementation defines route prefix, API-version defaults, recording/upload limits,
+and vocabulary budgets as constants. See [Runtime constants](DEVELOPMENT.md#runtime-constants).
 
 ## Backends
 
@@ -106,28 +106,27 @@ AZURE_OPENAI_API_KEY=your-resource-key
 PI_VOICE_DEPLOYMENT=gpt-transcribe
 ```
 
-Prefer the complete transcriptions URL for your actual deployment from the Azure portal.
-The example is a URL shape, not a promise that every resource serves that model/API version.
-A complete URL is used as supplied, including its `api-version`. Bare resource names and
-resource roots are also accepted; the hook then constructs a deployment URL using its
-built-in API-version default.
+Copy the complete transcriptions URL for your deployment from the Azure portal, using
+the resource, model, and API version available to your account. The hook preserves a
+complete URL, including its `api-version`. For a bare resource name or resource root,
+it constructs a deployment URL using its built-in API-version default.
 
 Deployment-style and `/openai/v1/audio/transcriptions` URLs are supported. A model field
 is included for the v1 form. Set `PI_VOICE_DEPLOYMENT` to the actual deployment name even
 when supplying a full URL: the hook chooses the structured branch when either the URL
-or that setting contains `gpt-transcribe`. It does not discover the deployed model from Azure.
+or that setting contains `gpt-transcribe`. Request shaping follows those configured strings.
 
 - `gpt-transcribe` uses structured vocabulary/language hints and requests automatic
   VAD with `chunking_strategy=auto`; a keyword-to-prompt fallback retains VAD.
-- For `gpt-4o-transcribe` or whisper, update both endpoint and deployment setting rather
-  than leaving the `gpt-transcribe` default. Their branch uses a bounded vocabulary
-  prompt and sends no VAD override.
+- For `gpt-4o-transcribe` or whisper, update both endpoint and deployment setting to match
+  that deployment. Their branch uses a bounded vocabulary prompt and leaves VAD behavior
+  to the provider's defaults.
 
-There is no fixed recognition-language setting. The structured Azure OpenAI branch gets
-up to three language hints from the browser's `Accept-Language`; English is appended as
-a fallback if it fits within that limit. A valid empty transcription leaves the draft
-untouched; it does not prove silence or VAD filtering. Audio still reaches the provider
-and can incur usage charges.
+Recognition language remains automatic. The structured Azure OpenAI branch gets up to
+three language hints from the browser's `Accept-Language`; English is appended as a
+fallback if it fits within that limit. A valid empty transcription preserves the draft
+and reports an empty result. Assess its cause from the audio and provider behavior.
+Audio reaches the provider and can incur usage charges.
 
 ### Azure AI Speech
 
@@ -141,13 +140,13 @@ AZURE_SPEECH_ENDPOINT=https://my-resource.cognitiveservices.azure.com
 AZURE_SPEECH_KEY=your-resource-key
 ```
 
-A bare resource name is expanded to a `cognitiveservices.azure.com` URL. This setting
-expects the resource root, not the full transcription operation URL.
+A bare resource name expands to a `cognitiveservices.azure.com` URL. Supply the resource
+root; the hook appends the transcription operation path.
 
-**Region support matters.** The project's existing setup notes list `eastus`,
-`northeurope`, `southeastasia`, `westus`, and `westus2` for MAI-Transcribe. Verify current
-availability for the resource/model before provisioning, then use `doctor` to check it.
-A valid key alone does not establish model availability in that region.
+**Region support matters.** The project's setup notes list `eastus`, `northeurope`,
+`southeastasia`, `westus`, and `westus2` for MAI-Transcribe. Verify current availability
+for the resource/model before provisioning, then use `doctor` to check it. Check
+credential validity and regional model availability separately.
 
 For example, with Azure CLI and an existing resource group:
 
@@ -160,10 +159,10 @@ az cognitiveservices account keys list --name my-speech --resource-group my-rg \
   --query key1 -o tsv
 ```
 
-The last command prints a secret; do not share its output. The application currently
-limits this backend to **50 single-word vocabulary terms**, not a generic 500-entry
-allowance. The rationale and historical measurements are in
-[Vocabulary limits](DEVELOPMENT.md#vocabulary-extraction-and-limits).
+The last command prints a secret; store the key in `voice.env` and keep its output
+private. The application caps this backend at **50 single-word vocabulary terms**.
+See [Vocabulary limits](DEVELOPMENT.md#vocabulary-extraction-and-limits) for the rationale
+and measurements.
 
 ### OpenAI-compatible services
 
@@ -182,9 +181,9 @@ PI_VOICE_OPENAI_MODEL=whisper-large-v3
 ```
 
 Use the chosen service's key in `OPENAI_API_KEY`. For a local whisper-compatible service,
-set its API root and model, explicitly select `PI_VOICE_PROVIDER=openai`, and leave the
-key empty if the server does not require one. The service must accept the OpenAI-style
-multipart `/audio/transcriptions` request; the hook appends that path to the base URL.
+set its API root and model and explicitly select `PI_VOICE_PROVIDER=openai`. Use an empty
+key for a keyless local server. The service must accept the OpenAI-style multipart
+`/audio/transcriptions` request; the hook appends that path to the base URL.
 
 ### Mock
 
@@ -196,82 +195,83 @@ This inline environment syntax is for POSIX shells. In PowerShell, set
 `$env:PI_VOICE_PROVIDER = 'mock'` before running `pi-web-voice`, or set the provider in
 `voice.env` as in the README.
 
-Mock makes no speech-provider request. It returns diagnostic text describing the received
-audio and, when available, some mined vocabulary. It tests the button, recorder, and
-round trip; it does not recognize speech. Browser microphone permissions still apply.
+Mock generates diagnostic text locally from the received audio and, when available,
+mined vocabulary. Use it to test the button, recorder, and HTTP round trip. Select a
+speech backend for speech recognition. Browser microphone permissions still apply.
 
 ## Recording and retry
 
 ### Starting and stopping
 
 Click the microphone next to image attachment, wait for `…` to become a clock, then
-speak. Click again to stop. The clock indicates microphone/audio-graph readiness, not
-a guarantee of uninterrupted sample delivery on every browser/device.
+speak. Click again to stop. Treat the clock as a microphone/audio-graph readiness cue;
+use capture diagnostics to assess sample collection.
 
-The current source opens the microphone only on click, not on pointer-down. Holding,
-sliding off, or abandoning a pointer gesture does not open it. Keyboard/VoiceOver
-activation, `Cmd/Ctrl+Shift+V`, and supported headphone media controls use the same
-start/stop controller.
+An explicit click or equivalent activation opens the microphone. While idle, pointer-down,
+held presses, and abandoned gestures keep it closed. Keyboard/VoiceOver activation,
+`Cmd/Ctrl+Shift+V`, and supported headphone media controls use the same start/stop controller.
 
-Clicking again during opening cancels the take. Browser permission requests cannot be
-aborted, so the button may remain disabled with **Cancelling microphone request** until
-the request settles and any late stream is closed. Wait rather than repeatedly pressing.
-Only one opening is allowed per page; other tabs have their own controller.
+Clicking again during opening cancels the take. Browser permission requests continue
+until they settle, so the button can remain disabled with **Cancelling microphone request**
+while cleanup closes any late stream. Wait for cleanup before starting another take.
+Each page serializes its own opening requests; separate tabs have separate controllers.
 
 Stopping releases the microphone. With audio callbacks running, a take stops automatically
 after approximately **10 minutes**, then transcribes normally. Browser audio is 16 kHz
 mono PCM WAV; a full-length take is about 19.2 MB, below the 25 MiB server upload ceiling.
-Each upstream fetch has a 10-minute timeout until response headers arrive. This is not
-an end-to-end deadline: body reading is outside that timer, and a compatibility fallback
-starts another attempt. Proxies and the host server may impose their own limits.
+Each upstream fetch has a 10-minute timeout until response headers arrive. Body reading
+continues outside that timer, and a compatibility fallback starts another timed attempt,
+so overall duration can exceed ten minutes. Proxies and the host server apply their own limits.
 
 ### Retry and conversation changes
 
-On a retryable failure, the original red error notice stays visible with an underlined
-**Retry** action. It resubmits the same WAV without opening the microphone. The action
-is disabled while transcribing; another failure updates the same notice, and success
-clears the pending take. The browser never automatically resubmits failed uploads.
+On a retryable failure, the red error notice stays visible with an underlined **Retry**
+action. Retry resubmits the same WAV while the microphone stays closed. The action is
+disabled while transcribing; another failure updates the same notice, and success clears
+the pending take. Each browser resubmission requires an explicit Retry action.
 Backend parameter-compatibility fallbacks within a request are described in
 [Development](DEVELOPMENT.md#provider-requests-and-fallbacks).
 
-Only one pending take is held in page memory:
+The page holds one pending take in memory:
 
-- Refreshing, closing, or browser page discard loses it. **Retry before reloading.**
+- **Retry before reloading.** Refreshing, closing, or browser page discard clears the take.
 - Starting a new take asks before replacement. Denied microphone access or a cancelled
-  opening preserves the previous pending take.
-- The pending take captures the page's reported session and working directory **when
-  recording stops**, not when it starts. Stay in the same conversation while recording;
-  after stopping, return to that conversation before retrying.
-- If text was received but the composer was unavailable or the conversation changed,
-  the text is retained. Local recovery inserts it without another provider request.
-- An explicitly empty transcript is a successful server result, not a retryable error.
-  It leaves the draft alone and shows a server-empty-result notice.
+  opening preserves the existing pending take.
+- Stop captures the page's session and working directory for the pending take. Stay in
+  the same conversation while recording, then return to the Stop-time conversation
+  whenever you retry.
+- When text is available but the composer is unavailable or the conversation changes,
+  the page retains the text. Local recovery inserts this cached text and keeps the
+  speech-service request count unchanged.
+- An explicitly empty transcript is a successful server result. It clears the pending
+  take, preserves the draft, and shows a server-empty-result notice.
 
-Each uploaded retry may incur another provider charge, even when an earlier response
-was lost after successful processing. Ordinary non-retryable notices disappear after
-four seconds; retryable notices remain until handled.
+Each uploaded retry may incur another provider charge. The provider can complete an
+attempt even when the browser loses its response. Ordinary non-retryable notices expire
+after four seconds; retryable notices remain until handled.
 
 ## Deployment and remote access
 
 ### HTTPS and access control
 
 Microphone capture requires HTTPS or a browser-trusted loopback origin. `http://localhost`
-and `http://127.0.0.1` work; ordinary LAN HTTP such as `http://192.168.1.10:30141` does not.
+and `http://127.0.0.1` work. For a LAN origin such as `http://192.168.1.10:30141`, configure
+HTTPS with a certificate the device trusts.
 
 | Situation | Approach |
 | --- | --- |
 | Remote machine, desktop client | Use `ssh -L 30141:127.0.0.1:30141 host`, then open `http://localhost:30141` |
 | Phone/tablet or LAN access | Use HTTPS via an access-controlled proxy, [Tailscale Serve](https://tailscale.com/kb/1312/serve), or Caddy with a certificate trusted by the device |
-| Desktop Chromium testing only | A temporary `--unsafely-treat-insecure-origin-as-secure=http://192.168.1.10:30141` override can help isolate HTTPS issues; do not use it as production deployment guidance |
+| Desktop Chromium testing only | Limit `--unsafely-treat-insecure-origin-as-secure=http://192.168.1.10:30141` to temporary desktop tests; use trusted HTTPS for deployment |
 
-For iOS Safari, use a certificate trusted by the device rather than relying on a desktop
-browser override. HTTPS is not authentication: keep the origin private or protect it,
-including `/__voice/`, with access control. See [Privacy and access control](#privacy-and-access-control).
+For iOS Safari, use a certificate the device trusts. HTTPS encrypts traffic; pair it
+with a private origin or access control, including `/__voice/`. See
+[Privacy and access control](#privacy-and-access-control).
 
 ### Running as a service
 
-If pi-web already runs under launchd or systemd, add the hook to its `NODE_OPTIONS`
-instead of replacing its launch command. Find the installed path with:
+Keep pi-web's existing launchd or systemd launch command and add the hook to its
+`NODE_OPTIONS`. Find the installed path with:
 
 ```bash
 pi-web-voice hook-path
@@ -295,9 +295,9 @@ lsof -nP -iTCP:30141 -sTCP:LISTEN
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agegr.pi-web.plist
 ```
 
-`launchctl kickstart -k` uses launchd's in-memory definition and does not load plist
-changes. A child `next start` process can retain the port; inspect it rather than
-killing unrelated Node/Next.js processes.
+Use `bootout` and `bootstrap` to load plist changes; `launchctl kickstart -k` uses
+launchd's in-memory definition. A child `next start` process can retain the port.
+Inspect the listener and terminate only the identified orphan for this service.
 
 For a systemd user-service override:
 
@@ -329,13 +329,13 @@ pi-web-voice doctor                  # generated one-second tone
 pi-web-voice doctor recording.wav    # a WAV file you choose
 ```
 
-Doctor prints the resolved settings with the key masked, vocabulary examples, and a
+Doctor prints resolved settings with the key masked, vocabulary examples, and a
 transcript or diagnosis. An empty result from the generated tone can be normal and
 still demonstrates a successful backend call. Doctor uses the configured provider and
-may incur charges; it does not test the browser microphone or every production proxy.
-In mock mode it does not validate speech credentials or contact an upstream service.
-Review its output before sharing: unlike request logs, it includes paths, endpoint,
-vocabulary, transcript, and possibly detailed errors.
+may incur charges. In mock mode its checks cover local processing only. Use browser
+checks for microphone capture and end-to-end checks for your production proxy path.
+Review output before sharing: doctor includes paths, endpoint, vocabulary, transcript,
+and potentially detailed errors.
 
 Typical backend responses:
 
@@ -350,64 +350,62 @@ Typical backend responses:
 
 ### Identify the failure source
 
-Current notices identify the source in English or Chinese using the browser language.
-HTTP notices include the status and a validated `x-pi-voice-request-id` when available;
-older hook installations without that header still show the status.
+Notices identify the source in English or Chinese using the browser language. HTTP
+notices include the status and a validated `x-pi-voice-request-id` when available.
+The status remains visible when the response omits the request ID.
 
 These labels describe the browser's request to `/__voice/transcribe`. The hook returns
-HTTP **502** for caught transcription failures, including an upstream 401 or 429. Look
-at the error detail and the log's `upstream_status` for the provider status; a browser
-502 by itself does not identify a gateway outage.
+HTTP **502** for caught transcription failures, including an upstream 401 or 429. Use
+the error detail and the log's `upstream_status` to distinguish provider responses from
+transport or gateway failures.
 
 | Notice | Meaning and next step | Transcription request/log? |
 | --- | --- | --- |
-| `Client · microphone` / `Client · audio` | Permission, startup, or audio-context activation failed; check permissions/HTTPS, then try again | No audio uploaded |
-| `Client · recording` | No samples captured; inspect the reported pre-stop audio state and try recording again | Nothing uploaded |
-| `Network` | Upload or response reading failed; retry the retained take and check connectivity | Unknown: the server may already have processed it |
-| `Server` | Non-success HTTP response; inspect status, structured error detail, and request ID | HTTP response received |
-| `Server response` | Successful HTTP status but empty/invalid body or missing/non-string `text`; retry and investigate the server/proxy | Response received, but unusable |
-| `Server · empty transcript` | Valid response explicitly returned empty text; review the audio/provider rather than assuming a transport failure | Successful completion with `0 chars` |
-| `Client · conversation` / `Client · composer` / `Client` | Local result handling failed; return to the conversation saved at Stop or restore its composer | Cached text may recover without another request |
+| `Client · microphone` / `Client · audio` | Permission, startup, or audio-context activation failure; check permissions/HTTPS, then try again | Local processing only |
+| `Client · recording` | Capture yields zero samples; inspect the pre-stop audio state and try recording again | Local processing only |
+| `Network` | Upload or response-reading failure; retry the retained take and check connectivity | The server may complete the attempt despite the client failure |
+| `Server` | HTTP error response; inspect status, structured error detail, and request ID | HTTP response available |
+| `Server response` | Successful HTTP status with an empty/invalid body or missing/non-string `text`; retry and investigate the server/proxy | Response requires format investigation |
+| `Server · empty transcript` | Valid response contains empty text; review the audio and provider behavior | Successful completion with `0 chars` |
+| `Client · conversation` / `Client · composer` / `Client` | Local result-handling failure; return to the Stop-time conversation or restore its composer | Cached text supports local recovery |
 
-A valid `{"text":""}` is not the same as an empty HTTP 200/204 body. The former clears
-the pending take as a successful empty transcription; the latter retains it for Retry.
-An empty transcript does not prove the user was silent or VAD rejected the recording.
+The browser accepts `{"text":""}` as a successful empty transcription and clears the
+pending take. An empty HTTP 200/204 body is a response-format error and retains the take
+for Retry. Assess silence and VAD behavior separately from the empty-text result.
 
 ### Non-JSON responses and HTTP 502
 
-HTML, plaintext, malformed JSON, and empty bodies receive stable explanations rather
-than browser parser exceptions such as Safari's “The string did not match the expected
-pattern.” For example:
+The browser describes HTML, plaintext, malformed JSON, and empty bodies with stable
+format explanations and the HTTP status. For example:
 
 ```text
 [Server] Transcription request failed (HTTP 502): Server or gateway returned HTML instead of JSON; recording kept for retry
 ```
 
 Structured JSON error strings remain visible, even with a wrong/missing Content-Type.
-For a non-JSON response received directly by the browser, the handler shows a format
-explanation rather than its raw body or arbitrary headers. Upstream error bodies wrapped
-by the hook in a JSON `error` string can still appear as plain text; review details before
-sharing them. A response-read interruption remains a network/read failure while preserving
-any known status. This improves diagnosis, not provider availability; use request evidence
-to identify where a failure originated.
+For a non-JSON response received directly by the browser, the handler limits the notice
+to its format, status, and validated request ID. Upstream error bodies wrapped by the
+hook in a JSON `error` string can appear as plain text; review details before sharing.
+A response-read interruption uses a network/read label and preserves any known status.
+Use request evidence to locate the failure and diagnose provider availability separately.
 
 ### Safari after backgrounding or switching tabs
 
-The maintainer has validated pi-web-voice through long-term daily use on iPhone Safari.
+The maintainer validates pi-web-voice through long-term daily use on iPhone Safari.
 For audio interruptions, the recorder resumes interrupted/suspended contexts, replaces
 closed contexts, and rebuilds the context after zero captured samples.
 
-Try recording again after a client-side capture error. If it persists, close and reopen
-the page, but recover any pending take first. Do not clear website data as the first
-step. Reopening also recreates audio state, so recovery after a reload is not proof of
-a stale-script cache. An already open page does need a reload to run updated client code.
+Try recording again after a client-side capture error. If it persists, recover any
+pending take, then close and reopen the page. Keep website data intact during these
+initial recovery steps. Reopening recreates audio state; use script/request evidence
+when investigating caching. Reload an open page to execute updated client code.
 
 ## Logs and diagnostic endpoints
 
 ### Transcription logs
 
-Each transcription POST gets a UTC start timestamp and its own request ID, also returned
-in `x-pi-voice-request-id`. Match that header in the browser Network panel to the log.
+Each transcription POST gets a UTC start timestamp and its own request ID. The hook
+returns that ID in `x-pi-voice-request-id`; match the browser Network header to the log.
 `<uuid>` is a placeholder in these examples:
 
 ```text
@@ -418,32 +416,33 @@ in `x-pi-voice-request-id`. Match that header in the browser Network panel to th
 | Field | Interpretation |
 | --- | --- |
 | `vad=auto` | The selected backend/model branch is configured to request automatic VAD |
-| `vad=default` | The selected branch sends no VAD override; the provider may still use its own VAD |
-| `result=empty` | Successful response without text; not proof of silence or VAD rejection |
-| `result=transcribed` | Provider returned text; not proof the browser inserted it |
-| `result=rejected · reason=empty-audio` | Server rejected a zero-byte upload |
-| `result=error`, `upstream_status=…` | Failure with a separate upstream HTTP status, or `n/a` without one |
-| Elapsed seconds | Request time, not just model inference |
+| `vad=default` | The selected branch leaves VAD behavior to the provider's defaults |
+| `result=empty` | The response contains empty text; assess its cause from the audio and provider behavior |
+| `result=transcribed` | The provider returns text; confirm insertion in the browser separately |
+| `result=rejected · reason=empty-audio` | The server rejects a zero-byte upload |
+| `result=error`, `upstream_status=…` | Failure with an upstream HTTP status, or `n/a` when that status is unavailable |
+| Elapsed seconds | Route elapsed time, including upload reading and backend work |
 | Audio seconds / terms / chars / languages | Estimated duration from PCM bytes, vocabulary/text counts, and language hints |
-| `mic opened in …ms` | Accepted activation to microphone/audio-graph readiness in the current source |
+| `mic opened in …ms` | Accepted activation to microphone/audio-graph readiness |
 
-The VAD label is computed before upload validation, so it also appears for rejected
-uploads that never reach a provider. It describes request configuration, not a reported
-filtering decision.
+The hook computes the VAD label before upload validation, so it also appears on local
+upload rejections. It records request configuration; the outcome fields describe the
+result of processing.
 
-The microphone timing now excludes pointer-hold time and replacement confirmation; the
-old pre-warm implementation measured from finger-down. The field name did not change,
-so do not interpret the changed time origin as a capture speedup. Retry reuses the
-original take's timing, not a new microphone opening.
+Microphone timing starts at accepted activation after replacement confirmation and ends
+at audio-graph readiness. Pointer-hold time is outside that interval. Retry reuses the
+original take's measurement while keeping the microphone closed. Compare timings that
+share the same measurement origin.
 
-Each uploaded retry is a **new POST and request ID**. There is no shared recording ID or
-audio fingerprint; equal durations do not prove two entries are the same take. A lost
-response may follow a successful server log. Cached-text insertion, abandoned gestures,
-and client-only capture failures do not create a new transcription log.
+Each uploaded retry is a **new POST and request ID**. Correlate requests through their
+IDs and the browser's request sequence; durations alone identify only an approximate
+audio length. A lost response can follow successful server processing. Only uploads
+create transcription request logs; cached-text insertion and capture cancellation remain
+client-local.
 
-Request logs contain metadata, not recordings, transcripts, vocabulary lists, keys,
-session IDs, working directories, or raw upstream error bodies. Detailed service errors
-can still reach the requesting browser. An empty result is not a billing exemption.
+The request-log schema contains metadata only: timestamps, request IDs, provider/VAD/
+outcome/status fields, timings, counts, and language hints. Detailed errors remain part
+of the caller's response. Provider billing also applies to successful empty results.
 
 ### Health and vocabulary inspection
 
@@ -454,31 +453,32 @@ curl 'http://127.0.0.1:30141/__voice/terms?cwd=/path/to/project'
 ```
 
 Replace placeholders and URL-encode real paths/IDs as needed. Health reports the active
-provider; it is **not** a credential or upstream connectivity test. The terms endpoint
-shows vocabulary a matching session/project would supply, including the requested ID
-and working directory. It can expose private project information; do not publish its
-output or expose the endpoint without access control.
+provider configuration; use `doctor` to check the configured speech service. The terms
+endpoint shows vocabulary a matching session/project supplies, including the requested
+ID and working directory. Treat this as private project information: protect the endpoint
+with access control and share only redacted diagnostic output.
 
 ## Privacy and access control
 
 - Audio travels from the browser to your pi-web origin and then to the configured
-  transcription backend. Conversation-derived vocabulary can accompany it. Mock does
-  not call an upstream speech service.
-- Only user/assistant text is mined, not thinking blocks, tool arguments, or tool results.
-  Candidate filtering drops several credential-like shapes, but is **heuristic, not a
-  guarantee that all sensitive terms are removed**. Inspect terms when privacy matters.
-- The hook does not put API keys in browser configuration. File-based credentials stay
-  in a private server object, rather than being added to every child process environment.
-- pi-web-voice does not persist recordings or transcripts to disk. Pending data is held
-  in page memory; sending text afterward follows pi-web's normal conversation handling.
-  Speech-provider retention, browser behavior, and external proxy logs are separate.
+  transcription backend. Conversation-derived vocabulary can accompany it. Mock
+  generates its response locally.
+- Vocabulary extraction reads only user/assistant prose and skips thinking blocks,
+  tool arguments, and tool results. Credential filtering covers specific token-like
+  shapes. Inspect the resulting terms to assess sensitive content beyond those patterns.
+- Browser configuration contains only the route prefix and provider. File-based
+  credentials stay in a private server object; explicitly exported service variables
+  retain their normal child-process inheritance.
+- This add-on keeps recordings and transcripts in memory. Pending data lives in the page;
+  sending text afterward follows pi-web's normal conversation handling. Speech-provider
+  retention, browser behavior, and external proxy logs have separate policies.
 - Transcription request logs are metadata-only. Doctor output, diagnostic endpoints,
   structured errors, and infrastructure logs can contain more detail. Request URLs carry
   session/working-directory parameters that a proxy may log independently.
-- The hook answers `/__voice/` before pi-web's application handlers and adds no
-  authentication of its own. Do not assume application-level login protects these routes.
-  Keep the service private or protect the entire origin, including voice routes, at an
-  appropriate access-control layer. HTTPS alone is not access control.
+- Serve voice routes through a private origin or an access-control layer in front of
+  the hook. The hook answers `/__voice/` before pi-web's application handlers, so these
+  routes need protection at the pre-hook layer. Pair HTTPS encryption with this access
+  control to protect both transport and entry to the service.
 
 ## Upgrading and uninstalling
 
@@ -490,15 +490,14 @@ npm update -g @agegr/pi-web
 ```
 
 For a source installation, update your checkout and reinstall it with `npm install -g .`.
-The hook does not edit pi-web's installed files, so a pi-web update needs no patch
-reapplication, but compatibility should still be checked.
+The hook preserves pi-web's installed files; package updates retain this external
+integration. Check compatibility after updating pi-web.
 
-The active installation matters: editing a checkout does not necessarily update a
-separate global copy. Check the service's `NODE_OPTIONS` and the path from `hook-path`.
-Client script changes require reloading the page; backend/configuration changes require
-restarting the service. The injected script is served with `Cache-Control: no-store`,
-but an already open page keeps executing its existing copy. Retry pending audio before
-refreshing or redeploying.
+Update the installation the service actually loads. Check the service's `NODE_OPTIONS`
+and the path from `hook-path` to identify that copy. Client script changes require a
+page reload; backend/configuration changes require a service restart. The injected
+script uses `Cache-Control: no-store`, while an open page keeps executing its existing
+copy. Retry pending audio before refreshing or redeploying.
 
 To disable voice input, remove its `--require` from the service's `NODE_OPTIONS` and
 reload/restart the service, or stop launching through `pi-web-voice`. Refresh open pages
@@ -508,5 +507,5 @@ to remove the injected controls. Optionally uninstall the package:
 npm uninstall -g pi-web-voice
 ```
 
-No pi-web source files need reverting. The separate `~/.pi/agent/voice.env` remains;
-remove it yourself if you no longer need those settings and credentials.
+pi-web's installed files stay intact. The separate `~/.pi/agent/voice.env` remains;
+keep or remove it according to your continuing need for those settings and credentials.
