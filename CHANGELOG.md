@@ -18,6 +18,14 @@
 
 ### Changed
 
+- Read transcription responses once as text before parsing JSON. Diagnose HTML, non-JSON,
+  empty and malformed JSON responses without exposing browser parser exceptions such as Safari's
+  “The string did not match the expected pattern.” Keep the HTTP status and the original WAV.
+- Preserve structured JSON error details, including common `message`/`detail` envelopes, and
+  accept valid JSON with an incorrect/missing content type. A body-read interruption remains a
+  network/read error even when HTTP 502 headers were received. Empty 200/204 bodies stay retryable;
+  only an explicit empty `text` field is a valid empty transcript. Raw non-JSON bodies are not
+  rendered or logged; only a stable format explanation is shown.
 - Make microphone capture click-only. Remove pointer-down pre-warming, its expiry timer,
   stream-claiming logic and automatic fallback opening. An abandoned pointer gesture never
   opens a microphone; each accepted activation makes one request through the same controller.
@@ -55,6 +63,10 @@
   late resolutions/rejections and another start after cleanup. Assert that live-stream count never
   exceeds one per page, and that the wait metadata excludes pointer-hold time. The isolated
   browser suite also exercises this lifecycle with real, generated Web Audio streams.
+- Exercise actual `Response` bodies and failed `ReadableStream` reads in unit tests. Extend the
+  browser fixture to send real HTML/plaintext/empty error bodies and to sever a TCP response after
+  its HTTP 502 headers. Guard against `Response.json()` use, verify one text read per attempt, and
+  recover the same WAV after all these failures without leaking raw response content.
 - Check that repeated uploads receive distinct request IDs and appropriate error/success logs
   without logging audio, transcripts, credentials, session IDs, paths or upstream error bodies.
 - Add `npm run test:retry`: a deterministic, self-contained headless-browser regression with
@@ -68,6 +80,8 @@
 
 - Pending audio is not written to disk and does not survive a page refresh, close or browser
   page discard. There is no recording history, download control or automatic retry loop.
+- Better client response handling does not eliminate real upstream/gateway HTTP failures or
+  establish the cause of a particular 502 without the corresponding request evidence.
 - The runtime logging format is unchanged by the retry feature. Each uploaded attempt is a
   separate request; a cached-text insertion does not generate another service request or log.
   Client failures before an upload likewise do not create a server transcription log.

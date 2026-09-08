@@ -26,8 +26,8 @@ function harness(text, { language = "en", now = Date.now } = {}) {
   }
   const composer = new Textarea("Keep my draft");
   const terminal = new Textarea("Do not touch the terminal", true);
-  const requests = [], notices = [];
-  let respond = () => ({ ok: true, status: 200, json: async () => ({ text }) });
+  const requests = [], notices = [], logs = [];
+  let respond = () => success(text);
   const navigator = { language };
   const window = {
     isSecureContext: true,
@@ -52,6 +52,7 @@ function harness(text, { language = "en", now = Date.now } = {}) {
     navigator,
     document,
     MutationObserver: class { observe() {} },
+    console: Object.fromEntries(["log", "warn", "error", "debug"].map(level => [level, (...args) => logs.push(args)])),
     Blob, Event, URLSearchParams, Date: class extends Date { static now() { return now(); } },
     setTimeout: schedule, clearTimeout: id => timers.delete(id),
     setInterval, clearInterval,
@@ -64,7 +65,7 @@ function harness(text, { language = "en", now = Date.now } = {}) {
   // Three seconds of samples exercise the real WAV encoding and upload path.
   recorder.chunks = [new Float32Array(3 * 16000)];
   return {
-    ui, recorder, composer, terminal, requests, notices, window, document, timers, navigator,
+    ui, recorder, composer, terminal, requests, notices, logs, window, document, timers, navigator,
     setResponse(fn) { respond = fn; },
     advanceTime(ms) {
       clock += ms;
@@ -135,7 +136,18 @@ function mountToolbar(h) {
 }
 
 const networkFailure = () => { throw new TypeError("Failed to fetch"); };
-const success = text => ({ ok: true, status: 200, json: async () => ({ text }) });
+function jsonResponse(body, status = 200, headers = {}) {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+}
+function rawResponse(body, status = 200, type, headers = {}) {
+  return new Response(typeof body === "string" ? new TextEncoder().encode(body) : body, {
+    status, headers: { ...(type ? { "content-type": type } : {}), ...headers },
+  });
+}
+function interruptedResponse(status = 200, error = new TypeError("Connection closed")) {
+  return rawResponse(new ReadableStream({ start(controller) { controller.error(error); } }), status, "application/json");
+}
+const success = (text, headers) => jsonResponse({ text }, 200, headers);
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
@@ -178,10 +190,10 @@ test("a nonempty transcript still inserts into the composer, not the terminal", 
 
 for (const [name, respond, prefix] of [
   ["network failure", networkFailure, "[Network]"],
-  ["HTTP error", () => ({ ok: false, status: 502, json: async () => ({ error: "Service unavailable" }) }), "[Server]"],
-  ["non-JSON error page", () => ({ ok: false, status: 503, json: async () => { throw new SyntaxError("Unexpected <"); } }), "[Server]"],
-  ["truncated JSON response", () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected end"); } }), "[Server response]"],
-  ["interrupted response body", () => ({ ok: true, status: 200, json: async () => { throw new TypeError("Connection closed"); } }), "[Network]"],
+  ["HTTP error", () => jsonResponse({ error: "Service unavailable" }, 502), "[Server]"],
+  ["non-JSON error page", () => rawResponse("<html>Bad Gateway</html>", 503, "text/html"), "[Server]"],
+  ["truncated JSON response", () => rawResponse('{"text":', 200, "application/json"), "[Server response]"],
+  ["interrupted response body", () => interruptedResponse(), "[Network]"],
 ]) {
   test(`${name} retains the WAV through repeated failures and retries the same request`, async () => {
     const h = harness("");
@@ -234,18 +246,20 @@ test("retry locks both request and response-body processing against double click
   h.setResponse(networkFailure);
   await h.ui.stop();
   const response = deferred();
-  const body = deferred();
+  let controller;
+  const body = new ReadableStream({ start(value) { controller = value; } });
   h.setResponse(() => response.promise);
   const attempt = h.ui.retry();
   assert.equal(h.ui.state, "working");
   await Promise.all([h.ui.retry(), h.ui.start(), h.ui.stop()]);
   h.ui.toggle();
   assert.equal(h.requests.length, 2);
-  response.resolve({ ok: true, json: () => body.promise });
+  response.resolve(rawResponse(body, 200, "application/json"));
   await Promise.resolve();
   await h.ui.retry();
   assert.equal(h.requests.length, 2);
-  body.resolve({ text: "Recovered once" });
+  controller.enqueue(new TextEncoder().encode(JSON.stringify({ text: "Recovered once" })));
+  controller.close();
   await attempt;
   assert.equal(h.composer.value, "Keep my draft Recovered once");
   assert.deepEqual(h.composer.events, ["input"]);
@@ -288,7 +302,7 @@ for (const [language, clientPrefix, serverPrefix] of [
 for (const payload of [null, {}, { text: null }, { text: 42 }, { text: [] }]) {
   test(`malformed successful response ${JSON.stringify(payload)} is retryable, not no-speech`, async () => {
     const h = harness("");
-    h.setResponse(() => ({ ok: true, status: 200, json: async () => payload }));
+    h.setResponse(() => jsonResponse(payload));
     await h.ui.stop();
     assert.match(h.notices[0], /^\[Server response\].*HTTP 200/);
     assert.ok(h.ui.pending?.wav);
@@ -305,32 +319,148 @@ for (const payload of [null, {}, { text: null }, { text: 42 }, { text: [] }]) {
 test("HTTP failures keep the status and details, including non-JSON gateway responses", async () => {
   for (const status of [401, 429, 500, 502, 503]) {
     const h = harness("");
-    h.setResponse(() => ({ ok: false, status, json: async () => ({ error: "Original diagnosis" }) }));
+    h.setResponse(() => jsonResponse({ error: "Original diagnosis" }, status));
     await h.ui.stop();
     assert.equal(h.notices[0], `[Server] Transcription request failed (HTTP ${status}): Original diagnosis`);
     assert.ok(h.ui.pending);
   }
   const h = harness("");
-  h.setResponse(() => ({ ok: false, status: 502, json: async () => { throw new SyntaxError("Unexpected <"); } }));
+  h.setResponse(() => rawResponse("<html>Bad Gateway</html>", 502, "text/html"));
   await h.ui.stop();
-  assert.match(h.notices[0], /^\[Server\].*HTTP 502.*Unexpected </);
+  assert.match(h.notices[0], /^\[Server\].*HTTP 502.*HTML instead of JSON/);
+  assert.doesNotMatch(h.notices[0], /Unexpected|expected pattern/);
+});
+
+const invalidBodies = [
+  ["HTML", '<!doctype html><html>PRIVATE_BODY<script>globalThis.bad=true</script></html>', "text/html; charset=utf-8", "HTML instead of JSON", "HTML，而不是 JSON"],
+  ["plain text", "PRIVATE_BODY upstream connection refused", "text/plain", "non-JSON response", "非 JSON 响应"],
+  ["empty body", "", "text/plain", "empty response", "空响应"],
+  ["whitespace body", " \r\n\t", "application/json", "empty response", "空响应"],
+  ["truncated JSON", '{"text":"PRIVATE_BODY', "application/json", "invalid or incomplete JSON", "无效或不完整的 JSON"],
+  ["HTML mislabeled as JSON", "<html>PRIVATE_BODY</html>", "application/json", "HTML instead of JSON", "HTML，而不是 JSON"],
+  ["JSON prefix without Content-Type", '{"text":"PRIVATE_BODY', undefined, "invalid or incomplete JSON", "无效或不完整的 JSON"],
+];
+for (const [name, body, type, english, chinese] of invalidBodies) {
+  for (const status of [200, 502]) {
+    test(`${name} with HTTP ${status} has a stable diagnosis and retains the exact WAV`, async () => {
+      for (const language of ["en", "zh-CN"]) {
+        const h = harness("", { language });
+        const reply = rawResponse(body, status, type);
+        h.setResponse(() => reply);
+        await h.ui.stop();
+        const expectedPrefix = language === "en" ? (status === 200 ? "[Server response]" : "[Server]")
+          : (status === 200 ? "[服务端响应]" : "[服务端]");
+        assert.ok(h.notices[0].startsWith(expectedPrefix));
+        assert.ok(h.notices[0].includes(`HTTP ${status}`));
+        assert.ok(h.notices[0].includes(language === "en" ? english : chinese));
+        assert.doesNotMatch(h.notices[0], /PRIVATE_BODY|<script>|Unexpected|expected pattern/);
+        assert.equal(reply.bodyUsed, true, "the real response body was consumed");
+        assert.equal(h.ui.pending.wav, h.requests[0].body);
+        assert.equal(h.ui.pending.text, undefined);
+        assert.equal(h.ui.retryButton.disabled, false);
+        assert.equal(h.composer.value, "Keep my draft");
+        assert.deepEqual(h.logs, [], "neither raw response bodies nor parser exceptions are logged");
+        h.setResponse(() => success("Recovered"));
+        await h.ui.retry();
+        assert.equal(h.requests[1].body, h.requests[0].body);
+        assert.equal(h.composer.value, "Keep my draft Recovered");
+        assert.equal(h.ui.pending, null);
+      }
+    });
+  }
+}
+
+test("Safari's generic Response.json SyntaxError is never used; text is read exactly once", async () => {
+  const h = harness("");
+  const reply = rawResponse("<html>Bad Gateway</html>", 502, "text/html");
+  const read = reply.text.bind(reply);
+  let textReads = 0, jsonReads = 0;
+  reply.text = () => { textReads += 1; return read(); };
+  reply.json = async () => {
+    jsonReads += 1;
+    throw new DOMException("The string did not match the expected pattern.", "SyntaxError");
+  };
+  h.setResponse(() => reply);
+  await h.ui.stop();
+  assert.equal(textReads, 1);
+  assert.equal(jsonReads, 0);
+  assert.equal(h.notices[0], "[Server] Transcription request failed (HTTP 502): Server or gateway returned HTML instead of JSON; recording kept for retry");
+  assert.ok(h.ui.pending?.wav);
+});
+
+for (const status of [200, 502]) {
+  test(`body-read failure remains a network/read error even after HTTP ${status} headers`, async () => {
+    const h = harness("");
+    h.setResponse(() => interruptedResponse(status, new DOMException("PRIVATE_BODY expected pattern", "SyntaxError")));
+    await h.ui.stop();
+    assert.equal(h.notices[0], `[Network] Could not finish reading the server response; recording kept for retry (HTTP ${status})`);
+    assert.ok(h.ui.pending?.wav);
+    assert.equal(h.ui.retryButton.disabled, false);
+    assert.deepEqual(h.logs, []);
+  });
+}
+
+test("valid JSON is accepted despite an incorrect or missing Content-Type", async () => {
+  for (const type of [undefined, "text/plain", "text/html", "application/problem+json"]) {
+    const h = harness("");
+    const reply = rawResponse(JSON.stringify({ text: "  好。  " }), 200, type);
+    h.setResponse(() => reply);
+    await h.ui.stop();
+    assert.equal(h.composer.value, "Keep my draft 好。");
+    assert.deepEqual(h.notices, []);
+    assert.equal(reply.bodyUsed, true);
+  }
+});
+
+test("only an explicit empty text field is a successful empty result; 204 and empty 200 stay retryable", async () => {
+  for (const reply of [rawResponse(null, 204), rawResponse("", 200, "application/json")]) {
+    const h = harness("");
+    h.setResponse(() => reply);
+    await h.ui.stop();
+    assert.match(h.notices[0], /^\[Server response\].*empty response/);
+    assert.ok(h.ui.pending?.wav);
+  }
+  const h = harness("");
+  await h.ui.stop();
+  assert.equal(h.notices[0], SERVER_EMPTY);
+  assert.equal(h.ui.pending, null);
+});
+
+test("structured HTTP error details stay intact without being written to logs", async () => {
+  const detail = "PRIVATE_STRUCTURED_DIAGNOSIS";
+  for (const payload of [{ error: detail }, { error: { message: detail } }, { message: detail }, { detail }, detail]) {
+    const h = harness("");
+    h.setResponse(() => jsonResponse(payload, 502));
+    await h.ui.stop();
+    assert.equal(h.notices[0], `[Server] Transcription request failed (HTTP 502): ${detail}`);
+    assert.deepEqual(h.logs, []);
+    assert.ok(h.ui.pending?.wav);
+  }
+});
+
+test("non-JSON diagnoses retain safe request IDs but not arbitrary header or body content", async () => {
+  const id = "8dd5d2dc-977c-42e4-b17d-2093c43a16b1";
+  const h = harness("");
+  h.setResponse(() => rawResponse("PRIVATE_BODY", 502, "application/PRIVATE_HEADER", { "x-pi-voice-request-id": id }));
+  await h.ui.stop();
+  assert.ok(h.notices[0].includes(`HTTP 502 · request ${id}`));
+  assert.doesNotMatch(h.notices[0], /PRIVATE_/);
+  assert.deepEqual(h.logs, []);
 });
 
 test("server notices include a validated request ID when available, not arbitrary header content", async () => {
   const id = "e11d3797-1dd4-424d-af56-84f84dcb923f";
   const h = harness("");
-  h.setResponse(() => ({
-    ok: false, status: 500, headers: { get: () => id }, json: async () => ({ error: "Service failed" }),
-  }));
+  h.setResponse(() => jsonResponse({ error: "Service failed" }, 500, { "x-pi-voice-request-id": id }));
   await h.ui.stop();
   assert.ok(h.notices[0].includes(`HTTP 500 · request ${id}`));
-  h.setResponse(() => ({ ...success(""), headers: { get: () => id } }));
+  h.setResponse(() => success("", { "x-pi-voice-request-id": id }));
   await h.ui.retry();
   assert.ok(h.notices.at(-1).startsWith("[Server · empty transcript]"));
   assert.ok(h.notices.at(-1).includes(`request ${id}`));
 
   const invalid = harness("");
-  invalid.setResponse(() => ({ ...success(""), headers: { get: () => "PRIVATE_HEADER_do_not_display" } }));
+  invalid.setResponse(() => success("", { "x-pi-voice-request-id": "PRIVATE_HEADER_do_not_display" }));
   await invalid.ui.stop();
   assert.equal(invalid.notices[0], SERVER_EMPTY);
 });
@@ -484,7 +614,7 @@ test("a failed retry replaces the error details without stacking notices or losi
   await h.ui.stop();
   const original = h.ui.toastElement;
   const text = "503 <html>" + "provider-details".repeat(300) + "</html>";
-  h.setResponse(() => ({ ok: false, status: 503, json: async () => ({ error: text }) }));
+  h.setResponse(() => jsonResponse({ error: text }, 503));
   await h.ui.retry();
   assert.equal(original.parentElement, null);
   assert.equal(h.document.body.children.length, 1);

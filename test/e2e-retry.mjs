@@ -68,12 +68,19 @@ const server = http.createServer(async (req, res) => {
     if (!res.destroyed) { res.writeHead(500); res.end(error.message); }
   }
 });
-async function respond(index, status, body) {
+async function takeResponse(index) {
   await waitFor(() => waiting.has(index), `upload ${index}`);
   const res = waiting.get(index);
   waiting.delete(index);
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
+  return res;
+}
+async function respondRaw(index, status, body, type) {
+  const res = await takeResponse(index);
+  res.writeHead(status, type ? { "content-type": type } : {});
+  res.end(body);
+}
+async function respond(index, status, body) {
+  await respondRaw(index, status, JSON.stringify(body), "application/json");
 }
 
 function connect(url) {
@@ -302,6 +309,65 @@ try {
     await idle();
     const emptyMessage = await evaluate('window.__piWebVoice.ui.toastElement.firstElementChild.textContent');
     check(`${language}: server empty text has a different label and HTTP status`, emptyMessage.startsWith(language === "en" ? "[Server · empty transcript]" : "[服务端·空结果]") && emptyMessage.includes("HTTP 200") && await evaluate('window.__piWebVoice.ui.pending===null && window.__piWebVoice.ui.retryButton===null'));
+
+    // Real error bytes, not a JSON object whose error field contains HTML.
+    // Guard the Safari-specific API too: the handler must read text once and
+    // never depend on Response.json()'s browser-specific exception message.
+    const gatewayStart = uploads.length;
+    await evaluate(`(() => {
+      window.__originalText=Response.prototype.text; window.__originalJson=Response.prototype.json;
+      window.__textReads=0; window.__jsonReads=0;
+      Response.prototype.text=function(){window.__textReads++; return window.__originalText.call(this);};
+      Response.prototype.json=function(){
+        window.__jsonReads++;
+        return Promise.reject(new DOMException('The string did not match the expected pattern.','SyntaxError'));
+      };
+      window.__recordTake(); window.__gatewayWav=window.__piWebVoice.ui.pending.wav;
+    })()`);
+    const cases = [
+      [502, 'text/html', '<!doctype html><html>PRIVATE_RAW_BODY<script>window.__rawHtmlRan=true</script></html>', 'HTML instead of JSON', 'HTML，而不是 JSON'],
+      [502, 'text/plain', 'PRIVATE_RAW_BODY upstream unavailable', 'non-JSON response', '非 JSON 响应'],
+      [502, 'text/plain', '', 'empty response', '空响应'],
+      [200, 'application/json', '{"text":"PRIVATE_RAW_BODY', 'invalid or incomplete JSON', '无效或不完整的 JSON'],
+      [200, 'application/json', '', 'empty response', '空响应'],
+    ];
+    for (let index = 0; index < cases.length; index++) {
+      if (index) await click();
+      const [status, type, body, english, chinese] = cases[index];
+      await respondRaw(gatewayStart + index + 1, status, body, type);
+      await idle();
+      const notice = await evaluate('window.__piWebVoice.ui.toastElement.firstElementChild.textContent');
+      const prefix = language === 'en' ? (status === 200 ? '[Server response]' : '[Server]')
+        : (status === 200 ? '[服务端响应]' : '[服务端]');
+      check(`${language}: actual ${body ? type : "empty body"} / HTTP ${status} is diagnosed without leaking its body`,
+        notice.startsWith(prefix) && notice.includes(`HTTP ${status}`) && notice.includes(language === 'en' ? english : chinese)
+        && !/PRIVATE_RAW_BODY|expected pattern|Unexpected/.test(notice)
+        && await evaluate('!window.__rawHtmlRan && window.__piWebVoice.ui.pending.wav===window.__gatewayWav && !window.__piWebVoice.ui.retryButton.disabled && window.__inputs===1'));
+    }
+
+    await click();
+    const broken = await takeResponse(gatewayStart + cases.length + 1);
+    broken.writeHead(502, { 'content-type': 'application/json', 'content-length': '4096', connection: 'close' });
+    broken.flushHeaders();
+    broken.write('{"error":"PRIVATE_RAW_BODY');
+    await waitFor(() => evaluate(`window.__textReads===${cases.length + 1}`), 'response body reader');
+    broken.destroy(); // headers received, but the body never finishes
+    await idle();
+    const interrupted = await evaluate('window.__piWebVoice.ui.toastElement.firstElementChild.textContent');
+    check(`${language}: interrupted 502 body is a read/network error with its HTTP status intact`,
+      interrupted.startsWith(language === 'en' ? '[Network]' : '[网络]') && interrupted.includes('HTTP 502')
+      && !/PRIVATE_RAW_BODY|expected pattern|Unexpected/.test(interrupted)
+      && await evaluate('window.__piWebVoice.ui.pending.wav===window.__gatewayWav && !window.__piWebVoice.ui.retryButton.disabled'));
+
+    await click();
+    await respond(gatewayStart + cases.length + 2, 200, { text: 'Recovered after gateway failure' });
+    await idle();
+    check(`${language}: gateway failures recover once using the original audio, without Response.json`,
+      uploads.slice(gatewayStart).every(bytes => bytes.equals(uploads[gatewayStart]))
+      && await evaluate(`window.__textReads===${cases.length + 2} && window.__jsonReads===0 && window.__inputs===2
+        && window.__piWebVoice.findComposer().value==='Keep my draft Recovered transcript Recovered after gateway failure'
+        && window.__piWebVoice.ui.pending===null && window.__piWebVoice.ui.toastElement===null && window.__micOpens===0`));
+    await evaluate('Response.prototype.text=window.__originalText; Response.prototype.json=window.__originalJson');
   }
 
   // Refresh is intentionally not durable storage. Assert the documented limit

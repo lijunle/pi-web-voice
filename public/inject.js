@@ -107,6 +107,11 @@
         networkFailed: "[网络] 无法完成转写请求，录音已保留，可重试",
         responseReadFailed: "[网络] 读取服务器响应中断，录音已保留，可重试",
         invalidResponse: "[服务端响应] 转写响应格式无效，录音已保留，可重试",
+        responseEmpty: "服务器或网关返回了空响应",
+        responseHtml: "服务器或网关返回了 HTML，而不是 JSON",
+        responseNonJson: "服务器或网关返回了非 JSON 响应",
+        responseInvalidJson: "服务器或网关返回了无效或不完整的 JSON",
+        recordingKept: "录音已保留，可重试",
         clientFailed: "[客户端] 无法处理转写结果，录音已保留，可重试",
         failed: "[服务端] 转写请求失败",
         retry: "重试",
@@ -130,6 +135,11 @@
         networkFailed: "[Network] Could not complete the transcription request; recording kept for retry",
         responseReadFailed: "[Network] Could not finish reading the server response; recording kept for retry",
         invalidResponse: "[Server response] Invalid transcription response; recording kept for retry",
+        responseEmpty: "Server or gateway returned an empty response",
+        responseHtml: "Server or gateway returned HTML instead of JSON",
+        responseNonJson: "Server or gateway returned a non-JSON response",
+        responseInvalidJson: "Server or gateway returned invalid or incomplete JSON",
+        recordingKept: "recording kept for retry",
         clientFailed: "[Client] Could not handle the transcript; recording kept for retry",
         failed: "[Server] Transcription request failed",
         retry: "Retry",
@@ -153,6 +163,52 @@
       details.push(`request ${id}`);
     }
     return details.length ? `${message} (${details.join(" · ")})` : message;
+  }
+
+  /** Read once: HTTP failure, body-read failure and invalid JSON are different. */
+  async function readTranscriptResponse(response) {
+    let body;
+    try {
+      body = await response.text();
+    } catch {
+      // Keep a known HTTP status even if reading that error response failed.
+      // Do not expose browser-specific parser/decoder exception messages.
+      throw new VoiceError(responseMessage(T.responseReadFailed, response));
+    }
+
+    const invalid = (reason) => new VoiceError(
+      `${responseMessage(response.ok ? T.invalidResponse : T.failed, response)}: ${reason}` +
+        (response.ok ? "" : `; ${T.recordingKept}`),
+    );
+    if (!body.trim()) throw invalid(T.responseEmpty);
+
+    let result;
+    try {
+      // Parse regardless of Content-Type: some gateways mislabel valid JSON.
+      // Response.json() can hide a useful 502 error behind Safari's generic
+      // "The string did not match the expected pattern" SyntaxError.
+      result = JSON.parse(body);
+    } catch {
+      const type = (response.headers?.get?.("content-type") || "").split(";")[0].trim().toLowerCase();
+      const html = type === "text/html" || type === "application/xhtml+xml" ||
+        /^\s*(?:<!doctype\s+html\b|<(?:html|head|body)\b)/i.test(body);
+      const json = /(?:\/|\+)json$/.test(type) || /^\s*(?:\{|\[)/.test(body);
+      // Only describe the format. Raw HTML/plaintext bodies and arbitrary
+      // headers may contain private data; neither display nor log them.
+      throw invalid(html ? T.responseHtml : json ? T.responseInvalidJson : T.responseNonJson);
+    }
+
+    if (!response.ok) {
+      const detail = [result?.error, result?.error?.message, result?.message, result?.detail, result]
+        .find((value) => typeof value === "string" && value.trim());
+      throw new VoiceError(`${responseMessage(T.failed, response)}${detail ? `: ${detail}` : ""}`);
+    }
+    // Only an explicit empty text field is a valid empty transcription. An
+    // empty HTTP body or malformed schema must retain the audio for Retry.
+    if (typeof result?.text !== "string") {
+      throw new VoiceError(responseMessage(T.invalidResponse, response));
+    }
+    return result.text.trim();
   }
 
   // ── audio ────────────────────────────────────────────────────────────────
@@ -707,23 +763,7 @@
           } catch (error) {
             throw new VoiceError(`${T.networkFailed}: ${error.message}`);
           }
-          let result;
-          try {
-            result = await response.json();
-          } catch (error) {
-            const message = !response.ok ? T.failed
-              : error?.name === "SyntaxError" ? T.invalidResponse : T.responseReadFailed;
-            throw new VoiceError(`${responseMessage(message, response)}: ${error.message}`);
-          }
-          if (!response.ok) {
-            const detail = typeof result?.error === "string" ? result.error : result?.error?.message;
-            throw new VoiceError(`${responseMessage(T.failed, response)}${detail ? `: ${detail}` : ""}`);
-          }
-          // A missing/malformed text field is not a successful empty transcript.
-          if (typeof result?.text !== "string") {
-            throw new VoiceError(responseMessage(T.invalidResponse, response));
-          }
-          take.text = result.text.trim();
+          take.text = await readTranscriptResponse(response);
           take.emptyMessage = responseMessage(T.empty, response);
         }
 

@@ -150,8 +150,9 @@ The server allows the backend up to another 10 minutes to finish a long transcri
 
 ### Retry a failed transcription
 
-If uploading or transcribing fails, the original red error notice keeps the full error
-message with an underlined **Retry** text action beside it — no separate border or background.
+If uploading or transcribing fails, the original red error notice describes the failure and
+preserves structured service error details, with an underlined **Retry** text action beside it
+— no separate border or background.
 It retains button semantics, keyboard focus and a 44 × 44 px minimum touch target. The notice
 stays until the recording is handled, rather than disappearing after four seconds. Retry
 resubmits the same WAV without opening the microphone or asking you to speak again. While
@@ -180,14 +181,39 @@ source in English or Chinese, using the browser's language:
 | `Client · microphone` / `Client · audio` | Permission, microphone startup, or audio-context activation failed | No audio uploaded |
 | `Client · recording` | Zero audio samples captured; the notice includes the pre-stop `AudioContext` state | Nothing uploaded, so no transcription log |
 | `Network` | Fetch failed or reading the response was interrupted; audio remains available for Retry | Unknown; the server may already have processed it |
-| `Server` | A non-success HTTP response; the notice retains its status and available error details | An HTTP response was received |
-| `Server response` | Invalid JSON or a missing/non-string `text` field; audio is kept for Retry | Response received, but unusable |
+| `Server` | A non-success HTTP response; JSON error details are preserved, and non-JSON/empty bodies are explained without hiding the status | An HTTP response was received |
+| `Server response` | An empty HTTP body, invalid JSON or a missing/non-string `text` field on a successful HTTP response; audio is kept for Retry | Response received, but unusable |
 | `Server · empty transcript` | A valid response explicitly returned empty text after audio was submitted | Completion log with `0 chars`; not proof that VAD rejected speech |
 | `Client · conversation` / `Client · composer` / `Client` | Local conversation/composer handling failed | Received text is retained for local recovery where available |
 
 Server notices include the HTTP status and, when supplied by the installed backend, a validated
 `x-pi-voice-request-id` for matching logs. Older backends without that header still show the
 source and HTTP status. Client-only failures are not sent to a separate telemetry endpoint.
+
+#### Non-JSON error responses, including Safari's "expected pattern" message
+
+The client reads each response body **once as text**, then parses JSON explicitly. It does not
+call `Response.json()`, whose generic Safari `SyntaxError` could previously replace a useful
+HTTP error with "The string did not match the expected pattern."
+
+- JSON error strings (`error`, `error.message`, `message`, or `detail`) remain visible with the
+  HTTP status. The client accepts valid JSON even if `Content-Type` is missing or mislabeled.
+- HTML, other non-JSON responses, invalid/incomplete JSON and empty HTTP bodies get distinct,
+  stable explanations. The body format is inferred from the content/header, not proof of which
+  server or proxy generated it. Raw non-JSON bodies and arbitrary headers are not shown or logged.
+- If reading the body fails, the message identifies a network/response-read failure and retains
+  any known HTTP status, including 502. It does not substitute a browser exception message.
+- An empty HTTP 200/204 response is **not** the same as `{"text":""}`. Only the latter is a valid
+  empty transcription; empty bodies and invalid responses retain the WAV and offer Retry.
+
+For example, an HTML 502 response becomes:
+
+```text
+[Server] Transcription request failed (HTTP 502): Server or gateway returned HTML instead of JSON; recording kept for retry
+```
+
+This improves diagnosis and preserves retryable audio; it does not fix an actual upstream or
+proxy outage. If a pending recording is still in the page, use Retry before refreshing it.
 
 ### Safari after switching tabs or returning from the background
 
@@ -525,6 +551,9 @@ cleanup, and rebuilding a context after zero samples. Click-only regressions exe
 presses, rapid start-cancel-start while opening/resuming, late success/failure cleanup, a peak of
 one live stream per page, and activation-to-ready timing metadata. Diagnostic tests distinguish client,
 network, HTTP, response-format and explicit empty-result cases, including optional request IDs.
+Response tests use real `Response` bodies and `ReadableStream` failures, not just a mocked
+`json()` rejection: HTML/plaintext/empty bodies, truncated JSON, wrong/missing content types,
+one-read semantics and the distinction between an empty HTTP body and `{"text":""}` are covered.
 No microphone, credentials, browser, or live speech-service calls are needed.
 
 `npm run test:retry` starts a loopback HTTP fixture and an isolated headless browser with
@@ -544,6 +573,10 @@ it, making pending/disabled states deterministic. It checks:
   and no writes to the terminal helper textarea.
 - Cleanup after success and the documented loss of page-only audio after a refresh.
 - Distinct client-no-audio and server-empty-text messages, including whether an upload occurred.
+- Actual HTML, plaintext and empty 502 responses, malformed/empty HTTP 200 bodies, and a TCP
+  response cut off after 502 headers. A guard makes `Response.json()` throw Safari's generic
+  exception if called; every response must instead be read once as text. The same recording
+  must still recover with one insertion after these failures.
 
 The final underlined Retry presentation was also manually accepted in the deployed service;
 that check complements, rather than replaces, the automated regression tests.
