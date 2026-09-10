@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Azure OpenAI `gpt-transcribe` sends a fixed English-language dictation prompt requesting
+  lightly cleaned multilingual prose in one paragraph. It asks for sentence boundaries
+  based on grammar and meaning rather than pauses or audio chunks, and permits removal
+  of meaningless fillers, stutters, accidental repetitions, and clearly abandoned starts.
+  It preserves substantive content, languages, tone, uncertainty, and technical terms,
+  keeps ambiguous wording, and treats dictated questions and instructions as content.
+  The prompt accompanies structured vocabulary/language hints, applies without conversation
+  vocabulary, and remains in the keyword fallback alongside automatic VAD. Transcripts
+  retain the provider's words and internal line breaks for user review; style adherence
+  depends on the model. See [dictation style guidance](DEVELOPMENT.md#dictation-style-guidance)
+  for the prompt's design references.
+
 ## [0.2.0] - 2026-09-08
 
 ### Added

@@ -99,6 +99,7 @@ API version, and style belong exclusively to the optional `azure-speech` backend
 | --- | --- | --- |
 | `azure-openai` | API version when constructing a deployment URL | `2024-10-21`; a complete endpoint URL keeps its own `api-version` |
 | `azure-openai` | Vocabulary budget | 60 terms |
+| `azure-openai` `gpt-transcribe` | Dictation style | Fixed English-language prompt for lightly cleaned prose, semantic sentence boundaries, and one paragraph |
 | `azure-speech` | Model / API version / style | `MAI-Transcribe-2` / `2025-10-15` / `clean` |
 | `azure-speech` | Vocabulary budget | 50 terms |
 | `openai` | Vocabulary budget | 60 terms |
@@ -195,7 +196,7 @@ configuration and transcription diagnostics. Operational field definitions belon
 
 | Backend | Vocabulary / request shape | Compatibility fallback |
 | --- | --- | --- |
-| Azure OpenAI `gpt-transcribe` | `keywords[]`, `languages[]`, and scalar `chunking_strategy=auto` | On HTTP 400, retry with a prompt while retaining VAD |
+| Azure OpenAI `gpt-transcribe` | `keywords[]`, `languages[]`, fixed dictation `prompt`, and scalar `chunking_strategy=auto` | On HTTP 400, move vocabulary into the prompt while retaining dictation guidance and VAD |
 | Other Azure OpenAI deployments | Bounded vocabulary prompt | Surface request failures to the caller |
 | Azure Speech | `phraseList.phrases`, enhanced MAI mode, automatic language identification | On HTTP 400 with a nonempty list, retry once with an empty list |
 | OpenAI-compatible | Model and bounded prompt at `/audio/transcriptions` | Use the service's default VAD behavior and surface request failures |
@@ -206,6 +207,18 @@ case-insensitively. Request shaping follows those configuration strings. Deploym
 and v1 URLs are supported; v1 requests include a model field. Language hints for the
 keyword branch use primary tags from `Accept-Language` in header order, deduplicate them,
 append English, and retain the first three. English fits when that three-tag budget allows.
+
+The Azure keyword branch sends `GPT_TRANSCRIBE_PROMPT` from `lib/providers.cjs` even with
+empty vocabulary. Its fixed English-language guidance requests lightly cleaned prose,
+semantic sentence boundaries across pauses, original languages and meaning, and one
+paragraph. It directs recognition through the supplied `languages` hints when present.
+See [Dictation style guidance](#dictation-style-guidance) for cleanup scope and source
+comparisons. The fallback appends the bounded vocabulary after this guidance in the same
+`prompt` field. Other Azure model branches and OpenAI-compatible services use their
+vocabulary-only prompts. Model output controls style adherence; local normalization
+trims outer whitespace while preserving internal line breaks and words. Mocked request
+tests verify the prompt, fallback, language-hint forwarding, and text-preservation
+contracts; use representative live audio to assess transcription quality separately.
 
 Parameter fallbacks operate inside the server request; manual Retry resubmits from the
 browser. Use the provider response to diagnose the specific cause of an HTTP 400.
@@ -466,8 +479,9 @@ and E2E success are separate from this publishing gate.
 - **HTTP interception:** streamed/fixed HTML injection, split UTF-8, byte views, string
   encodings, immutable object/raw headers, content-length handling, compressed/alternative
   charset pass-through, callbacks, fluent return values, and single-call error propagation.
-- **Provider contracts:** scalar VAD encoding, empty/nonempty results, requests with empty
-  vocabulary, keyword fallback with VAD retained, provider registry membership, JSON
+- **Provider contracts:** scalar VAD encoding, fixed Azure GPT dictation guidance,
+  empty/nonempty results, requests with empty vocabulary, keyword fallback with style
+  and VAD retained, provider text preservation, provider registry membership, JSON
   container validation, and provider-specific request shapes.
 - **Boundary guards and vocabulary:** unknown exceptions, hostile getters/proxies,
   integer status metadata, malformed session records, long/EOF-terminated headers,
@@ -641,6 +655,126 @@ Read response text once, then parse JSON, so diagnostics preserve HTTP status an
 identify the response format. Display direct non-JSON failures as bounded format
 explanations and keep their audio available for Retry. Resolve upstream/proxy outages
 using request evidence and the relevant service's operational diagnostics.
+
+### Dictation style guidance
+
+The Azure `gpt-transcribe` prompt treats the recording as a user's dictated message and
+requests lightly cleaned prose. Grammar and meaning determine punctuation and sentence
+boundaries; fragments of the same sentence stay together across pauses. One continuous
+plain-text paragraph is the requested format, independently of audio chunk boundaries.
+The prompt permits omission of meaningless fillers, stutters, accidental repetitions,
+and clearly abandoned starts, while retaining meaningful affirmation, negation,
+emphasis, uncertainty, and the order of ideas. Ambiguous wording stays intact. Questions
+and instructions in the recording remain content to transcribe, rather than requests
+for the transcription model to answer or execute. The fixed prompt uses English without
+naming specific spoken languages and refers to the supplied `languages` hints.
+
+Comparable open-source dictation prompts provide these design references:
+
+- [Handy's default post-processing prompt](https://github.com/cjpais/Handy/blob/2c5c7601d8db493feeb251702e950f11c8326728/src-tauri/src/settings.rs)
+  combines filler removal and punctuation correction with original-language, meaning,
+  and word-order preservation.
+- [VoiceInk's enhancement rules](https://github.com/Beingpax/VoiceInk/blob/71b817c12a344283efda3f5dde5203f0ffebeea0/VoiceInk/Core/Enhancement/AIPrompts.swift)
+  explicitly permit sentence-boundary correction and removal of stutters and abandoned
+  starts, while keeping uncertain wording. Its paragraph-length limits serve a different
+  formatting goal from this project's single-paragraph dictation.
+- [OpenWhispr's cleanup prompt](https://github.com/OpenWhispr/openwhispr/blob/009fd0866657dbbc083285707506c298a3c39a6c/src/locales/en/prompts.json)
+  preserves meaningful fillers and dictated questions, removes accidental repetitions,
+  and keeps formatting proportional to the length of a dictation.
+
+These references describe text cleanup after speech recognition. They inform instruction
+wording rather than establish effectiveness inside a native transcription request.
+The [OpenAI transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text)
+identifies formatting as a use of `prompt` alongside `keywords` and `languages`.
+This project applies guidance in the existing Azure transcription request, keeps VAD
+and vocabulary handling intact, and preserves the resulting text apart from outer
+whitespace. Evaluate sentence boundaries, omissions, multilingual terms, and meaningful
+short responses with representative audio; mocked tests establish request and return
+contracts rather than recognition quality.
+
+#### Live prompt and chunking probe
+
+The **2026-09-10 probe** uses the working tree based on `0af3700`, macOS 26.6.2 arm64,
+and Node 26.8.2. The `lib/providers.cjs` SHA-256 is
+`a73ff3d217a6a379cf69dc4c0b69c3bac97f8d72039e29de740535621811ca2f`;
+the 1,046-character dictation prompt SHA-256 is
+`fa0990e0350b5f712373a55c8fd26ede907282598aee9ac2d2706c00464b79a3`.
+The configured deployment is `gpt-transcribe`, with a deployment-style
+`/openai/deployments/<deployment>/audio/transcriptions?api-version=2025-03-01-preview`
+URL. Responses report `x-ms-region: Central US`; the underlying model version is outside
+this probe's measurements. The private resource hostname and credentials stay outside
+the record.
+
+Requests use the production adapter's normal multipart fields, captured with a mocked
+fetch before the authorized direct HTTP calls. Language hints are `["en", "zh"]`;
+synthetic vocabulary is `API`, `GPT Transcribe`, `VAD`, `hook.cjs`, and `pi-web`.
+Each case makes one request, with no automatic retries or compatibility fallbacks.
+Browser capture, personal conversation history, and physical microphones are outside
+this probe. All five responses have HTTP 200; their duration-based usage totals 147
+seconds. Call times span 22:44:06–22:44:39 UTC.
+
+Local macOS speech synthesis supplies these segments at 175 words per minute. Tingting
+supplies the prose and Samantha supplies `API`. Each segment's PCM keeps 80 ms around
+samples whose absolute amplitude exceeds 200; silence between segments supplies the
+controlled pauses. The WAV format is 16 kHz mono 16-bit PCM.
+
+| Spoken segment | Inserted silence afterward |
+| --- | --- |
+| 呃，我想检查一下这个语音输入的问题。 | 500 ms |
+| 我希望它能够 | 1,300 ms |
+| 把同一句话的内容 | 1,700 ms |
+| 放在同一个段落里面。 | 800 ms |
+| 我，我不是要求它翻译，也不是让它总结。 | 700 ms |
+| 比如我们修改了这个 | 1,200 ms |
+| API | 1,000 ms |
+| 之后，需要重新启动服务，然后再做测试。 | 900 ms |
+| 嗯，这就是我的意思。 | 200 ms |
+
+The paused WAV lasts 30.19475 seconds, with SHA-256
+`22fac8b93da8c4ff5bb073ef5c7bdaffe08001eaf1ae7337aca53bfdc2cc5876`.
+The short-gap control keeps the identical spoken samples, with each inserted silence
+set to 100 ms. It lasts 22.79475 seconds, with SHA-256
+`f16afdab5a21480e7647574f97d81ad3a9c98c5ceb50d976fa4ccf3872272b6f`.
+Both files include 200 ms of leading silence. The minimal-prompt condition uses:
+
+> Transcribe the speech in its original languages. Use grammar and meaning, not pauses,
+> to form sentences. Return a single paragraph with normal punctuation and no line breaks.
+
+| Audio | Prompt | `chunking_strategy` | Returned lines / internal LF characters | HTTP round-trip time |
+| --- | --- | --- | --- | --- |
+| Paused | Omitted | `auto` | 8 / 7 | 6.016 s |
+| Paused | Current dictation prompt | `auto` | 8 / 7 | 4.846 s |
+| Paused | Minimal prompt | `auto` | 8 / 7 | 3.811 s |
+| Paused | Current dictation prompt | Omitted; provider defaults | 1 / 0 | 2.744 s |
+| Short gaps | Current dictation prompt | `auto` | 1 / 0 | 3.770 s |
+
+The paused/current/auto result includes this exact fragment:
+
+```text
+我希望它能够。
+把同一句话的内容。
+放在同一个段落里面。
+```
+
+With the same audio and prompt but the chunking field omitted, the result contains:
+
+```text
+我希望它能够把同一句话的内容放在同一个段落里面。
+```
+
+These are actual LF characters in the upstream JSON text, rather than display wrapping.
+The contrast identifies automatic chunking and pause length as relevant factors for
+this input; the three prompt variants do not control its line layout with `auto`.
+Provider internals remain unobserved, so this record distinguishes request conditions
+rather than attributing each newline to a specific internal component. Omission of the
+chunking field requests provider defaults; it is not proof that every internal VAD is
+disabled. All five outputs also retain the leading `呃` and trailing `嗯`, so these
+samples do not establish reliable filler removal through the prompt.
+
+Each condition has one sample. Use repeated and real-microphone recordings to assess
+general reliability. Keep production automatic VAD and verbatim result handling intact
+while investigating segmentation controls: the [silence probes](#vad-and-silence-handling)
+show the separate risk of vocabulary-biased text without the explicit VAD request.
 
 ### VAD and silence handling
 

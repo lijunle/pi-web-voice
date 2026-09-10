@@ -118,11 +118,33 @@ is included for the v1 form. Set `PI_VOICE_DEPLOYMENT` to the actual deployment 
 when supplying a full URL: the hook chooses the structured branch when either the URL
 or that setting contains `gpt-transcribe`. Request shaping follows those configured strings.
 
-- `gpt-transcribe` uses structured vocabulary/language hints and requests automatic
-  VAD with `chunking_strategy=auto`; a keyword-to-prompt fallback retains VAD.
+- `gpt-transcribe` uses structured vocabulary/language hints, a fixed dictation prompt,
+  and automatic VAD with `chunking_strategy=auto`. The keyword-to-prompt fallback retains
+  the dictation guidance and VAD, placing vocabulary at the end of the prompt.
 - For `gpt-4o-transcribe` or whisper, update both endpoint and deployment setting to match
   that deployment. Their branch uses a bounded vocabulary prompt and leaves VAD behavior
   to the provider's defaults.
+
+The fixed English-language prompt requests lightly cleaned multilingual dictation in
+one plain-text paragraph. It asks for grammar- and meaning-based sentence boundaries,
+joining sentence fragments across pauses rather than treating each pause or audio chunk
+as a new sentence. It permits removal of meaningless fillers, stutters, accidental
+repetitions, and clearly abandoned starts while preserving meaning, information, idea
+order, tone, uncertainty, and technical terms. Ambiguous words stay in the transcript.
+The prompt uses the `languages` parameter as recognition hints when supplied and keeps
+spoken languages intact. Questions and commands remain dictated content for the user to
+send, rather than instructions for the transcription model to answer or execute.
+
+The prompt applies even with no conversation vocabulary. Treat it as model guidance:
+review the result for omissions and style adherence. Local processing preserves the
+provider's words and internal line breaks, trimming only outer whitespace. The prompt
+lives in `lib/providers.cjs`; the documented configuration settings cover backend selection
+rather than custom prompts. See [dictation style guidance](DEVELOPMENT.md#dictation-style-guidance)
+for the design rationale and source comparisons. In the
+[paused-speech probe](DEVELOPMENT.md#live-prompt-and-chunking-probe), automatic chunking
+returns multiple lines despite both detailed and minimal single-paragraph prompts.
+Assess pause/chunking behavior separately from prompt wording, and keep VAD's
+silence-protection role in mind when investigating output formatting.
 
 Recognition language remains automatic. The structured Azure OpenAI branch gets up to
 three language hints from the browser's `Accept-Language`; English is appended as a
