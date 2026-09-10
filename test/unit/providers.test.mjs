@@ -4,7 +4,8 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { transcribe, vadMode, termBudget } = require("../../lib/providers.cjs");
+const { transcribe, termBudget } = require("../../lib/providers.cjs");
+const { toneWav } = require("../../lib/doctor.cjs");
 const audio = Buffer.alloc(6444);
 const terms = ["CLI", "retry_safe", "implementation.md"];
 const languages = ["zh", "en"];
@@ -81,7 +82,7 @@ function capture(t, replies) {
 }
 
 for (const v1 of [false, true]) {
-  test(`gpt-transcribe sends dictation guidance and automatic VAD on the ${v1 ? "v1" : "deployment"} route`, async (t) => {
+  test(`gpt-transcribe sends dictation guidance with default chunking on the ${v1 ? "v1" : "deployment"} route`, async (t) => {
     const config = azureConfig();
     if (v1) {
       config.azureOpenAI.endpoint =
@@ -96,9 +97,7 @@ for (const v1 of [false, true]) {
       new URL(url).pathname,
       v1 ? "/openai/v1/audio/transcriptions" : "/openai/deployments/gpt-transcribe/audio/transcriptions",
     );
-    assert.equal(form.get("chunking_strategy"), "auto");
-    assert.equal(form.get("chunking_strategy"), vadMode(config));
-    assert.equal(form.get("chunking_strategy[type]"), null);
+    assert.deepEqual([...form.keys()].filter(key => key.startsWith("chunking_strategy")), []);
     assert.equal(form.get("response_format"), "json");
     assert.equal(form.get("model"), v1 ? "gpt-transcribe" : null);
     assert.deepEqual(form.getAll("keywords[]"), terms);
@@ -109,11 +108,11 @@ for (const v1 of [false, true]) {
   });
 }
 
-test("dictation guidance and VAD apply without conversation vocabulary", async (t) => {
+test("dictation guidance applies without conversation vocabulary or a chunking override", async (t) => {
   const calls = capture(t, [{ body: { text: "" } }]);
   assert.equal(await transcribe(audio, azureConfig(), [], languages), "");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].form.get("chunking_strategy"), "auto");
+  assert.equal(calls[0].form.get("chunking_strategy"), null);
   assert.deepEqual(calls[0].form.getAll("keywords[]"), []);
   assert.deepEqual(calls[0].form.getAll("languages[]"), languages);
   assert.deepEqual(calls[0].form.getAll("prompt"), [dictationPrompt]);
@@ -128,27 +127,19 @@ for (const hints of [[], ["fr", "es", "de"]]) {
     assert.equal(calls[0].form.get("language"), null);
     assert.deepEqual(calls[0].form.getAll("prompt"), [dictationPrompt]);
     assert.deepEqual(calls[0].form.getAll("keywords[]"), terms);
-    assert.equal(calls[0].form.get("chunking_strategy"), "auto");
+    assert.equal(calls[0].form.get("chunking_strategy"), null);
   });
 }
 
-test("VAD reporting and requests agree when the endpoint identifies the model", async (t) => {
+test("an endpoint identifying gpt-transcribe gets style guidance with default chunking", async (t) => {
   const config = azureConfig(
     "alias",
     "https://speech.example.invalid/openai/deployments/gpt-transcribe/audio/transcriptions?api-version=2025-03-01-preview",
   );
   const calls = capture(t, [{ body: { text: "" } }]);
   await transcribe(audio, config, terms, languages);
-  assert.equal(vadMode(config), "auto");
-  assert.equal(calls[0].form.get("chunking_strategy"), vadMode(config));
+  assert.equal(calls[0].form.get("chunking_strategy"), null);
   assert.deepEqual(calls[0].form.getAll("prompt"), [dictationPrompt]);
-});
-
-test("other providers report defaults without claiming to disable their own VAD", () => {
-  for (const provider of ["azure-speech", "openai", "mock"]) {
-    assert.equal(vadMode({ provider }), "default");
-  }
-  assert.equal(vadMode(azureConfig("gpt-4o-transcribe")), "default");
 });
 
 test("dictation guidance leaves returned fillers and internal line breaks intact", async (t) => {
@@ -159,8 +150,9 @@ test("dictation guidance leaves returned fillers and internal line breaks intact
 
 for (const v1 of [false, true]) {
   for (const vocabulary of [terms, []]) {
-    test(`the ${v1 ? "v1" : "deployment"} keyword fallback retains style and VAD with ${vocabulary.length} terms`, async (t) => {
-      t.mock.method(console, "error", () => {});
+    test(`the ${v1 ? "v1" : "deployment"} keyword fallback retains style and default chunking with ${vocabulary.length} terms`, async (t) => {
+      const warnings = [];
+      t.mock.method(console, "error", message => warnings.push(message));
       const config = azureConfig();
       if (v1) {
         config.azureOpenAI.endpoint =
@@ -172,8 +164,10 @@ for (const v1 of [false, true]) {
       ]);
       assert.equal(await transcribe(audio, config, vocabulary, languages), "");
       assert.equal(calls.length, 2);
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /vad=default$/);
       for (const { form } of calls) {
-        assert.equal(form.get("chunking_strategy"), "auto");
+        assert.deepEqual([...form.keys()].filter(key => key.startsWith("chunking_strategy")), []);
         assert.equal(form.get("response_format"), "json");
         assert.equal(form.get("model"), v1 ? "gpt-transcribe" : null);
         assert.deepEqual(Buffer.from(await form.get("file").arrayBuffer()), audio);
@@ -189,16 +183,16 @@ for (const v1 of [false, true]) {
   }
 }
 
-test("a service rejecting VAD cannot silently downgrade to an ungated request", async (t) => {
-  t.mock.method(console, "error", () => {});
-  const rejection = { status: 400, body: { error: "chunking_strategy unsupported" } };
-  const calls = capture(t, [rejection, rejection]);
-  await assert.rejects(
-    transcribe(audio, azureConfig(), terms, languages),
-    /chunking_strategy unsupported/,
-  );
-  assert.equal(calls.length, 2);
-  for (const { form } of calls) assert.equal(form.get("chunking_strategy"), "auto");
+test("nonempty silent WAVs reach the provider because local silence detection is separate work", async (t) => {
+  const silence = toneWav(0.2);
+  silence.fill(0, 44);
+  const text = "provider text from a silent recording";
+  const calls = capture(t, [{ body: { text } }]);
+  assert.equal(await transcribe(silence, azureConfig(), terms, languages), text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].form.get("chunking_strategy"), null);
+  assert.deepEqual(calls[0].form.getAll("keywords[]"), terms);
+  assert.deepEqual(Buffer.from(await calls[0].form.get("file").arrayBuffer()), silence);
 });
 
 test("a service rejecting the dictation prompt surfaces its error after one fallback", async (t) => {
@@ -208,7 +202,7 @@ test("a service rejecting the dictation prompt surfaces its error after one fall
   await assert.rejects(transcribe(audio, azureConfig(), [], languages), /prompt unsupported/);
   assert.equal(calls.length, 2);
   for (const { form } of calls) {
-    assert.equal(form.get("chunking_strategy"), "auto");
+    assert.equal(form.get("chunking_strategy"), null);
     assert.deepEqual(form.getAll("prompt"), [dictationPrompt]);
   }
 });

@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { createRouter } = require("../../lib/routes.cjs");
+const { toneWav } = require("../../lib/doctor.cjs");
 const audio = Buffer.alloc(44 + 3 * 16000 * 2);
 const privateText = "PRIVATE_TRANSCRIPT_do_not_log";
 
@@ -82,7 +83,7 @@ function requestId(response) {
   return id;
 }
 
-test("empty responses log requested VAD, outcome, UTC time and a per-request ID", async (t) => {
+test("empty responses log provider-default VAD, outcome, UTC time and a per-request ID", async (t) => {
   const h = await harness(t);
   const first = await h.post();
   const second = await h.post();
@@ -93,10 +94,10 @@ test("empty responses log requested VAD, outcome, UTC time and a per-request ID"
   for (const [index, response] of [first, second].entries()) {
     assert.match(h.logs[index], /^\[pi-web-voice\] \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/);
     assert.ok(h.logs[index].includes(`request=${requestId(response)}`));
-    assert.match(h.logs[index], /audio_context=unspecified · provider=azure-openai · vad=auto · result=empty/);
+    assert.match(h.logs[index], /audio_context=unspecified · provider=azure-openai · vad=default · result=empty/);
     assert.match(h.logs[index], /3\.0s audio · 0 terms · 0 chars · zh\/en/);
     assert.doesNotMatch(h.logs[index], /mic opened|filtered|blocked/);
-    assert.equal(h.requests[index].get("chunking_strategy"), "auto");
+    assert.equal(h.requests[index].get("chunking_strategy"), null);
   }
   assert.deepEqual(h.errors, []);
 });
@@ -107,7 +108,7 @@ test("nonempty results log counts and microphone wait, never the transcript", as
   assert.equal(response.body.text, privateText);
   assert.equal(response.status, 200);
   assert.ok(h.logs[0].includes(`request=${requestId(response)}`));
-  assert.match(h.logs[0], /vad=auto · result=transcribed/);
+  assert.match(h.logs[0], /vad=default · result=transcribed/);
   assert.ok(h.logs[0].includes(`${privateText.length} chars`));
   assert.match(h.logs[0], /mic opened in 340ms$/);
   assert.match(h.logs[0], /audio_context=per-take/);
@@ -132,10 +133,24 @@ test("dictation guidance reaches the provider while its text reaches the caller 
   assert.match(h.requests[0].get("prompt"), /Use grammar and meaning, not pauses or audio chunks/);
   assert.match(h.requests[0].get("prompt"), /when uncertain, keep the words/);
   assert.match(h.requests[0].get("prompt"), /dictated content, not requests to answer or execute/);
-  assert.equal(h.requests[0].get("chunking_strategy"), "auto");
+  assert.equal(h.requests[0].get("chunking_strategy"), null);
   assert.deepEqual(h.requests[0].getAll("languages[]"), ["zh", "en"]);
   assert.doesNotMatch(h.logs.join("\n"), /嗯，我同意|hook\.cjs|continuous plain-text paragraph|hesitation fillers|sentence boundaries/);
   assert.deepEqual(h.errors, []);
+});
+
+test("recorded silence reaches the provider while the draft-facing result stays unchanged", async (t) => {
+  const silence = toneWav(0.2);
+  silence.fill(0, 44);
+  const h = await harness(t, { body: { text: privateText } });
+  const response = await h.post(silence);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.text, privateText);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].get("chunking_strategy"), null);
+  assert.deepEqual(Buffer.from(await h.requests[0].get("file").arrayBuffer()), silence);
+  assert.match(h.logs[0], /vad=default · result=transcribed/);
+  assert.doesNotMatch(h.logs[0], /vad=auto|vad=off|filtered|PRIVATE_/);
 });
 
 test("a model with no VAD override is logged as default, not disabled", async (t) => {
@@ -154,7 +169,7 @@ test("an upstream error logs its status but not its private response body", asyn
   assert.ok(response.body.error.includes(privateText), "the caller still gets the diagnosis");
   assert.equal(h.requests.length, 1);
   assert.ok(h.errors[0].includes(`request=${requestId(response)}`));
-  assert.match(h.errors[0], /vad=auto · result=error/);
+  assert.match(h.errors[0], /vad=default · result=error/);
   assert.match(h.errors[0], /upstream_status=429$/);
   assert.doesNotMatch(h.errors.join("\n"), /PRIVATE_|speech\.example/);
   assert.deepEqual(h.logs, []);

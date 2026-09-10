@@ -118,9 +118,10 @@ is included for the v1 form. Set `PI_VOICE_DEPLOYMENT` to the actual deployment 
 when supplying a full URL: the hook chooses the structured branch when either the URL
 or that setting contains `gpt-transcribe`. Request shaping follows those configured strings.
 
-- `gpt-transcribe` uses structured vocabulary/language hints, a fixed dictation prompt,
-  and automatic VAD with `chunking_strategy=auto`. The keyword-to-prompt fallback retains
-  the dictation guidance and VAD, placing vocabulary at the end of the prompt.
+- `gpt-transcribe` uses structured vocabulary/language hints and a fixed dictation prompt.
+  Both the initial request and keyword-to-prompt fallback omit `chunking_strategy`,
+  leaving chunking/VAD at provider defaults. The fallback retains the dictation guidance
+  and places vocabulary at the end of the prompt.
 - For `gpt-4o-transcribe` or whisper, update both endpoint and deployment setting to match
   that deployment. Their branch uses a bounded vocabulary prompt and leaves VAD behavior
   to the provider's defaults.
@@ -143,8 +144,14 @@ rather than custom prompts. See [dictation style guidance](DEVELOPMENT.md#dictat
 for the design rationale and source comparisons. In the
 [paused-speech probe](DEVELOPMENT.md#live-prompt-and-chunking-probe), automatic chunking
 returns multiple lines despite both detailed and minimal single-paragraph prompts.
-Assess pause/chunking behavior separately from prompt wording, and keep VAD's
-silence-protection role in mind when investigating output formatting.
+Assess pause/chunking behavior separately from prompt wording.
+
+**Silence protection is a known gap in this dictation trial.** Local checks detect zero
+captured samples and zero-byte uploads, rather than recorded silence. A nonempty silent
+WAV still reaches the provider and can produce vocabulary-biased or invented text.
+Independent silence detection is separate work. Speak during a take and review the
+transcript before sending; assess provider-default chunking without treating it as proof
+that every internal VAD is disabled.
 
 Recognition language remains automatic. The structured Azure OpenAI branch gets up to
 three language hints from the browser's `Accept-Language`; English is appended as a
@@ -463,16 +470,16 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 `<uuid>` is a placeholder in these examples:
 
 ```text
-[pi-web-voice] 2026-09-07T20:32:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=auto · result=empty · 0.5s · 3.0s audio · 60 terms · 0 chars · en
-[pi-web-voice] 2026-09-07T20:33:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=auto · result=transcribed · 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
+[pi-web-voice] 2026-09-07T20:32:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=default · result=empty · 0.5s · 3.0s audio · 60 terms · 0 chars · en
+[pi-web-voice] 2026-09-07T20:33:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=default · result=transcribed · 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
 ```
 
 | Field | Interpretation |
 | --- | --- |
 | `audio_context=per-take` | The client declares one fresh context per take; Retry retains that original capture policy |
 | `audio_context=unspecified` | The request omits the recognized policy marker, as with an older open page or a direct API caller |
-| `vad=auto` | The selected backend/model branch is configured to request automatic VAD |
-| `vad=default` | The selected branch leaves VAD behavior to the provider's defaults |
+| `vad=auto` | Historical records or probe configurations with an explicit automatic-VAD request |
+| `vad=default` | Current adapters leave VAD/chunking behavior to provider defaults; this is not a VAD-off claim |
 | `result=empty` | The response contains empty text; assess its cause from the audio and provider behavior |
 | `result=transcribed` | The provider returns text; confirm insertion in the browser separately |
 | `result=rejected · reason=empty-audio` | The server rejects a zero-byte upload |
@@ -481,7 +488,7 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 | Audio seconds / terms / chars / languages | Estimated duration from PCM bytes, vocabulary/text counts, and language hints |
 | `mic opened in …ms` | Accepted activation to microphone/audio-graph readiness |
 
-The hook computes the VAD and audio-context labels before upload validation, so both
+The request label includes the VAD policy and audio-context marker before upload validation, so both
 also appear on upload rejections and caught failures. The audio-context field accepts
 only the fixed `per-take` marker; all other values become `unspecified`. It describes a
 client-reported policy, not server verification of context creation or audio health.

@@ -100,6 +100,7 @@ API version, and style belong exclusively to the optional `azure-speech` backend
 | `azure-openai` | API version when constructing a deployment URL | `2024-10-21`; a complete endpoint URL keeps its own `api-version` |
 | `azure-openai` | Vocabulary budget | 60 terms |
 | `azure-openai` `gpt-transcribe` | Dictation style | Fixed English-language prompt for lightly cleaned prose, semantic sentence boundaries, and one paragraph |
+| `azure-openai` `gpt-transcribe` | Chunking policy | Omit `chunking_strategy` on initial and fallback requests; use provider defaults |
 | `azure-speech` | Model / API version / style | `MAI-Transcribe-2` / `2025-10-15` / `clean` |
 | `azure-speech` | Vocabulary budget | 50 terms |
 | `openai` | Vocabulary budget | 60 terms |
@@ -196,7 +197,7 @@ configuration and transcription diagnostics. Operational field definitions belon
 
 | Backend | Vocabulary / request shape | Compatibility fallback |
 | --- | --- | --- |
-| Azure OpenAI `gpt-transcribe` | `keywords[]`, `languages[]`, fixed dictation `prompt`, and scalar `chunking_strategy=auto` | On HTTP 400, move vocabulary into the prompt while retaining dictation guidance and VAD |
+| Azure OpenAI `gpt-transcribe` | `keywords[]`, `languages[]`, fixed dictation `prompt`, and provider-default chunking | On HTTP 400, move vocabulary into the prompt while retaining dictation guidance and provider-default chunking |
 | Other Azure OpenAI deployments | Bounded vocabulary prompt | Surface request failures to the caller |
 | Azure Speech | `phraseList.phrases`, enhanced MAI mode, automatic language identification | On HTTP 400 with a nonempty list, retry once with an empty list |
 | OpenAI-compatible | Model and bounded prompt at `/audio/transcriptions` | Use the service's default VAD behavior and surface request failures |
@@ -219,6 +220,13 @@ vocabulary-only prompts. Model output controls style adherence; local normalizat
 trims outer whitespace while preserving internal line breaks and words. Mocked request
 tests verify the prompt, fallback, language-hint forwarding, and text-preservation
 contracts; use representative live audio to assess transcription quality separately.
+
+Every adapter leaves VAD/chunking configuration to the provider's defaults. Azure GPT
+requests omit `chunking_strategy` on both attempts, and route/fallback logs report
+`vad=default` rather than claiming VAD is disabled. Independent silence detection is
+outside the current implementation: a nonempty silent WAV passes the upload checks and
+reaches the provider with vocabulary. See [VAD and silence handling](#vad-and-silence-handling)
+for the known hallucination risk during this dictation trial.
 
 Parameter fallbacks operate inside the server request; manual Retry resubmits from the
 browser. Use the provider response to diagnose the specific cause of an HTTP 400.
@@ -479,9 +487,10 @@ and E2E success are separate from this publishing gate.
 - **HTTP interception:** streamed/fixed HTML injection, split UTF-8, byte views, string
   encodings, immutable object/raw headers, content-length handling, compressed/alternative
   charset pass-through, callbacks, fluent return values, and single-call error propagation.
-- **Provider contracts:** scalar VAD encoding, fixed Azure GPT dictation guidance,
-  empty/nonempty results, requests with empty vocabulary, keyword fallback with style
-  and VAD retained, provider text preservation, provider registry membership, JSON
+- **Provider contracts:** omission of explicit chunking settings, fixed Azure GPT
+  dictation guidance, empty/nonempty results, requests with empty vocabulary, keyword
+  fallback with style retained, silent-WAV forwarding, provider text preservation,
+  provider registry membership, JSON
   container validation, and provider-specific request shapes.
 - **Boundary guards and vocabulary:** unknown exceptions, hostile getters/proxies,
   integer status metadata, malformed session records, long/EOF-terminated headers,
@@ -686,9 +695,9 @@ These references describe text cleanup after speech recognition. They inform ins
 wording rather than establish effectiveness inside a native transcription request.
 The [OpenAI transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text)
 identifies formatting as a use of `prompt` alongside `keywords` and `languages`.
-This project applies guidance in the existing Azure transcription request, keeps VAD
-and vocabulary handling intact, and preserves the resulting text apart from outer
-whitespace. Evaluate sentence boundaries, omissions, multilingual terms, and meaningful
+This project applies guidance in the existing Azure transcription request, uses
+provider-default chunking with conversation vocabulary, and preserves the resulting
+text apart from outer whitespace. Evaluate sentence boundaries, omissions, multilingual terms, and meaningful
 short responses with representative audio; mocked tests establish request and return
 contracts rather than recognition quality.
 
@@ -705,8 +714,9 @@ URL. Responses report `x-ms-region: Central US`; the underlying model version is
 this probe's measurements. The private resource hostname and credentials stay outside
 the record.
 
-Requests use the production adapter's normal multipart fields, captured with a mocked
-fetch before the authorized direct HTTP calls. Language hints are `["en", "zh"]`;
+Requests in this record use the adapter version identified by the source hash above,
+with normal multipart fields captured by a mocked fetch before the authorized direct
+HTTP calls. Language hints are `["en", "zh"]`;
 synthetic vocabulary is `API`, `GPT Transcribe`, `VAD`, `hook.cjs`, and `pi-web`.
 Each case makes one request, with no automatic retries or compatibility fallbacks.
 Browser capture, personal conversation history, and physical microphones are outside
@@ -772,11 +782,19 @@ disabled. All five outputs also retain the leading `呃` and trailing `嗯`, so 
 samples do not establish reliable filler removal through the prompt.
 
 Each condition has one sample. Use repeated and real-microphone recordings to assess
-general reliability. Keep production automatic VAD and verbatim result handling intact
-while investigating segmentation controls: the [silence probes](#vad-and-silence-handling)
-show the separate risk of vocabulary-biased text without the explicit VAD request.
+general reliability. The adapter uses provider-default chunking for the dictation trial
+while preserving returned text. Evaluate the [silence-probe evidence](#vad-and-silence-handling)
+separately: omission of the explicit VAD request exposes the risk of vocabulary-biased
+text from silent recordings.
 
 ### VAD and silence handling
+
+The current adapters use provider-default VAD/chunking, with `chunking_strategy` omitted.
+Local validation detects zero captured samples and empty uploads, rather than recorded
+silence. A nonempty silent WAV reaches the provider and can return unrelated text,
+including conversation vocabulary. Independent silence detection is separate work.
+Keep this risk explicit while evaluating the dictation trial, and review transcripts
+before sending them.
 
 The project's live-probe dataset uses an Azure OpenAI `gpt-transcribe` deployment endpoint
 with `api-version=2025-03-01-preview` and conversation vocabulary enabled. In these
@@ -797,10 +815,10 @@ and manual use. Run live probes separately from `npm test` when requested, using
 that represents the intended microphone, background conditions, and quiet speech.
 
 The endpoint probes return 400 for invalid scalar VAD values and ignore bracketed
-fields such as `chunking_strategy[type]`. Use the scalar form and retain it during
-keyword-to-prompt fallback. Other provider/model branches keep their
-own VAD defaults. Audio reaches the service and remains subject to provider billing;
-use provider evidence to determine the cause of an empty result.
+fields such as `chunking_strategy[type]`. Use the scalar form when reproducing the
+automatic-VAD dataset; the current adapter omits the field on both initial and fallback
+requests. Audio reaches the service and remains subject to provider billing. Use
+provider evidence to determine the cause of an empty result.
 
 ### Vocabulary extraction and limits
 

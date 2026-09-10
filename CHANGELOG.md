@@ -15,10 +15,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   It preserves substantive content, languages, tone, uncertainty, and technical terms,
   keeps ambiguous wording, and treats dictated questions and instructions as content.
   The prompt accompanies structured vocabulary/language hints, applies without conversation
-  vocabulary, and remains in the keyword fallback alongside automatic VAD. Transcripts
+  vocabulary, and remains in the keyword fallback. Transcripts
   retain the provider's words and internal line breaks for user review; style adherence
   depends on the model. See [dictation style guidance](DEVELOPMENT.md#dictation-style-guidance)
   for the prompt's design references.
+- Azure OpenAI `gpt-transcribe` omits `chunking_strategy` on initial and fallback
+  requests for a provider-default dictation trial, instead of requesting automatic
+  VAD-based chunking. Route and fallback logs report `vad=default`, without claiming
+  that all internal VAD is disabled. Prompt, vocabulary, language hints, and returned
+  text handling remain intact. Independent silence detection is deferred: nonempty
+  silent recordings still reach the provider and can produce vocabulary-biased text.
 
 ## [0.2.0] - 2026-09-08
 
