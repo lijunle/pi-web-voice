@@ -30,6 +30,7 @@ async function harness(t, { settings = config(), body = { text: "" }, status = 2
   const logs = [];
   const errors = [];
   const requests = [];
+  const upstreamHeaders = [];
   t.mock.method(console, "log", (...args) => logs.push(args.join(" ")));
   t.mock.method(console, "error", (...args) => errors.push(args.join(" ")));
   let respond = () => {
@@ -38,13 +39,14 @@ async function harness(t, { settings = config(), body = { text: "" }, status = 2
   };
   t.mock.method(globalThis, "fetch", async (_url, init) => {
     requests.push(init.body);
+    upstreamHeaders.push(init.headers);
     return respond();
   });
   const server = http.createServer(createRouter(settings));
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
 
-  function post(bytes = audio, query = "") {
+  function post(bytes = audio, query = "", headers = {}) {
     return new Promise((resolve, reject) => {
       const req = http.request({
         hostname: "127.0.0.1",
@@ -52,7 +54,7 @@ async function harness(t, { settings = config(), body = { text: "" }, status = 2
         path: `/__voice/transcribe${query}`,
         method: "POST",
         agent: false,
-        headers: { "content-type": "audio/wav", "accept-language": "zh-CN,en;q=0.8" },
+        headers: { "content-type": "audio/wav", "accept-language": "zh-CN,en;q=0.8", ...headers },
       }, res => {
         const chunks = [];
         res.on("data", chunk => chunks.push(chunk));
@@ -74,7 +76,7 @@ async function harness(t, { settings = config(), body = { text: "" }, status = 2
       req.end(bytes);
     });
   }
-  return { post, logs, errors, requests, setResponse(fn) { respond = fn; } };
+  return { post, logs, errors, requests, upstreamHeaders, setResponse(fn) { respond = fn; } };
 }
 
 function requestId(response) {
@@ -139,19 +141,92 @@ test("dictation guidance reaches the provider while its text reaches the caller 
   assert.deepEqual(h.errors, []);
 });
 
-test("recorded silence reaches the provider while the draft-facing result stays unchanged", async (t) => {
-  const silence = toneWav(0.2);
+test("recorded silence skips vocabulary mining and the speech service", async (t) => {
+  const silence = toneWav(4);
+  silence.fill(0, 44);
+  const settings = config();
+  Object.defineProperty(settings, "context", { get() { assert.fail("silence must skip vocabulary setup"); } });
+  const h = await harness(t, { settings, body: { text: privateText } });
+  const response = await h.post(silence, "?session=PRIVATE_SESSION&cwd=%2FPRIVATE_PROJECT&audio_context=per-take");
+  assert.equal(response.status, 422);
+  assert.equal(response.body.code, "silence_detected");
+  assert.equal(response.body.text, undefined, "silence is not a provider-empty transcript");
+  assert.equal(h.requests.length, 0);
+  assert.ok(h.logs[0].includes(`request=${requestId(response)}`));
+  assert.match(h.logs[0], /vad=default · result=skipped · reason=silence/);
+  assert.match(h.logs[0], /audio_gate=silence · audio_samples=64000 · audio_peak=0\.000000 · audio_rms_max=0\.000000 · upstream=not-called$/);
+  assert.doesNotMatch(h.logs[0], /vad=auto|vad=off|PRIVATE_/);
+  assert.deepEqual(h.errors, []);
+});
+
+test("a silence bypass affects one request and stays out of the provider request", async (t) => {
+  const silence = toneWav(.2);
   silence.fill(0, 44);
   const h = await harness(t, { body: { text: privateText } });
-  const response = await h.post(silence);
-  assert.equal(response.status, 200);
-  assert.equal(response.body.text, privateText);
+  const blocked = await h.post(silence);
+  const allowed = await h.post(silence, "?wait=250", { "x-pi-voice-silence-check": "bypass" });
+  const blockedAgain = await h.post(silence);
+  assert.deepEqual([blocked.status, allowed.status, blockedAgain.status], [422, 200, 422]);
+  assert.equal(new Set([blocked, allowed, blockedAgain].map(requestId)).size, 3);
+  assert.equal(allowed.body.text, privateText);
   assert.equal(h.requests.length, 1);
-  assert.equal(h.requests[0].get("chunking_strategy"), null);
   assert.deepEqual(Buffer.from(await h.requests[0].get("file").arrayBuffer()), silence);
-  assert.match(h.logs[0], /vad=default · result=transcribed/);
-  assert.doesNotMatch(h.logs[0], /vad=auto|vad=off|filtered|PRIVATE_/);
+  assert.equal(h.requests[0].get("chunking_strategy"), null);
+  assert.equal(h.requests[0].get("x-pi-voice-silence-check"), null);
+  assert.equal(h.upstreamHeaders[0]["x-pi-voice-silence-check"], undefined);
+  assert.match(h.logs[1], /audio_gate=bypass · mic opened in 250ms$/);
+  assert.doesNotMatch(h.logs.join("\n"), /PRIVATE_/);
 });
+
+test("only the exact bypass header value bypasses silence detection", async (t) => {
+  const silence = toneWav(.2);
+  silence.fill(0, 44);
+  const h = await harness(t);
+  for (const value of ["", "skip", "true", "BYPASS", "bypass, bypass", "PRIVATE_MARKER", ["bypass", "bypass"]]) {
+    assert.equal((await h.post(silence, "", { "x-pi-voice-silence-check": value })).status, 422);
+  }
+  assert.equal(h.requests.length, 0);
+  assert.doesNotMatch(h.logs.join("\n"), /PRIVATE_MARKER|audio_gate=bypass/);
+});
+
+test("a quiet short signal after silence forwards the complete WAV and provider text", async (t) => {
+  const wav = toneWav(4);
+  wav.fill(0, 44);
+  const short = toneWav(.08);
+  for (let offset = 44; offset < short.length; offset += 2) {
+    short.writeInt16LE(Math.round(short.readInt16LE(offset) / 32), offset);
+  }
+  short.copy(wav, 44 + 3 * 32000, 44);
+  const transcript = "好。\nYes.";
+  const h = await harness(t, { body: { text: transcript } });
+  const response = await h.post(wav);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.text, transcript);
+  assert.equal(h.requests.length, 1);
+  assert.deepEqual(Buffer.from(await h.requests[0].get("file").arrayBuffer()), wav);
+  assert.equal(h.requests[0].get("chunking_strategy"), null);
+  assert.match(h.logs[0], /audio_gate=signal · audio_samples=64000/);
+});
+
+test("unrecognized audio passes through without a guessed silence classification", async (t) => {
+  const h = await harness(t, { body: { text: "normal result" } });
+  const response = await h.post(Buffer.from("unrecognized audio format"));
+  assert.equal(response.status, 200);
+  assert.equal(response.body.text, "normal result");
+  assert.equal(h.requests.length, 1);
+  assert.match(h.logs[0], /audio_gate=unknown/);
+});
+
+for (const provider of ["azure-openai", "azure-speech", "openai", "mock"]) {
+  test(`silence gating precedes the ${provider} adapter`, async (t) => {
+    const silence = toneWav(.2);
+    silence.fill(0, 44);
+    const h = await harness(t, { settings: { ...config(), provider } });
+    assert.equal((await h.post(silence)).status, 422);
+    assert.equal(h.requests.length, 0);
+    assert.match(h.logs[0], /upstream=not-called$/);
+  });
+}
 
 test("a model with no VAD override is logged as default, not disabled", async (t) => {
   const h = await harness(t, { settings: config("whisper") });

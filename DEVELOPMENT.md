@@ -15,6 +15,7 @@ For a first pass through the implementation, start with these key files:
 
 - [hook.cjs](hook.cjs) — loads configuration and connects the HTTP hook to the voice routes.
 - [lib/routes.cjs](lib/routes.cjs) — handles voice requests and transcription metadata logging.
+- [lib/audio.cjs](lib/audio.cjs) — checks whole-take PCM signal levels before provider dispatch.
 - [lib/providers.cjs](lib/providers.cjs) — builds speech-service requests and compatibility fallbacks.
 - [public/inject.js](public/inject.js) — implements microphone controls, capture, retry, and composer insertion.
 
@@ -30,7 +31,8 @@ hook.cjs → config.cjs + patch.cjs + routes.cjs
     │                         │ microphone → 16 kHz mono PCM WAV
     │                         ▼
     └── POST /__voice/transcribe
-              ├── context.cjs → ranked session/project vocabulary
+              ├── audio.cjs → quiet take: HTTP 422 + explicit recovery
+              ├── context.cjs → ranked session/project vocabulary for forwarded takes
               └── providers.cjs → selected transcription backend
                                       │
                      JSON text ◀──────┘
@@ -63,7 +65,7 @@ just the route prefix and provider; credential objects stay server-side.
 | `/__voice/inject.js` | Reads the active installed client file on every request and prepends browser configuration |
 | `/__voice/health` | Reports the configured provider locally |
 | `/__voice/terms` | Returns vocabulary for a supplied session/project |
-| `/__voice/transcribe` | Accepts a nonempty POST body, mines vocabulary, invokes a provider, and returns text plus metadata |
+| `/__voice/transcribe` | Checks a nonempty POST body's signal levels; quiet takes get recovery, forwarded takes get vocabulary and provider transcription |
 
 Provide access control before requests reach these voice handlers. See
 [Privacy and access control](USAGE.md#privacy-and-access-control) for deployment and
@@ -88,6 +90,9 @@ separately when diagnosing a running service.
 | Project header scan limit | First JSONL line, up to 64 KiB |
 | Vocabulary cache / project index TTL | 20 seconds / 60 seconds |
 | Keyboard shortcut | `Cmd/Ctrl+Shift+V` |
+| Signal analysis window / minimum supported take | 320 samples / 20 ms at 16 kHz |
+| Quiet limits (inclusive) | Maximum window RMS `0.001` (-60 dBFS) and absolute peak `0.004` (about -48 dBFS) |
+| WAV chunk scan bound | 128 chunks; unsupported or ambiguous input passes through |
 
 #### Backend-specific constants
 
@@ -167,6 +172,8 @@ an explicit empty transcript are separate outcomes:
 - Require a string `text` in successful responses. Retain audio for Retry on empty HTTP
   bodies, malformed JSON, and missing/non-string `text`. Treat explicit empty/whitespace
   strings as successful empty results and clear their pending takes.
+- Recognize HTTP 422 plus the exact `silence_detected` code as a local signal-gate
+  outcome. Retain the WAV with Transcribe anyway; successful empty text remains separate.
 - Use `VoiceError` for source-specific expected failures and client labels for unexpected
   local errors. Render notices through text nodes to keep error details inert.
 
@@ -223,10 +230,10 @@ contracts; use representative live audio to assess transcription quality separat
 
 Every adapter leaves VAD/chunking configuration to the provider's defaults. Azure GPT
 requests omit `chunking_strategy` on both attempts, and route/fallback logs report
-`vad=default` rather than claiming VAD is disabled. Independent silence detection is
-outside the current implementation: a nonempty silent WAV passes the upload checks and
-reaches the provider with vocabulary. See [VAD and silence handling](#vad-and-silence-handling)
-for the known hallucination risk during this dictation trial.
+`vad=default` rather than claiming VAD is disabled. The HTTP route applies a separate
+[whole-take signal gate](#whole-take-silence-gate) before vocabulary and provider dispatch.
+Provider adapters and Doctor remain direct-call paths; their callers control preflight
+checks. The gate does not change provider parameters or transcription text.
 
 Parameter fallbacks operate inside the server request; manual Retry resubmits from the
 browser. Use the provider response to diagnose the specific cause of an HTTP 400.
@@ -496,10 +503,15 @@ and E2E success are separate from this publishing gate.
   integer status metadata, malformed session records, long/EOF-terminated headers,
   exact session IDs, string working directories, and prose-only extraction.
 - **Routes and logs:** binary stream validation, distinct request IDs and outcomes for
-  repeated uploads, timing/status fields, and a metadata-only log schema that keeps
-  private request content separate.
+  repeated uploads, timing/status fields, quiet-take skips before vocabulary extraction,
+  exact one-request bypass markers, and metadata-only signal metrics.
+- **Signal gate:** quiet PCM and low-level synthetic noise, local RMS/peak boundaries,
+  short signals after long silence, partial windows, attenuated synthetic speech,
+  supported ancillary chunks, bounded malformed/unsupported WAV handling, and byte preservation.
 - **Composer and retry:** identical WAV reuse, explicit sequential resubmission,
   conversation binding, cached-text recovery, replacement confirmation, and terminal isolation.
+  Silence recovery covers localized notices, explicit-only bypass, repeated failures,
+  double clicks, new-take reset, accessible controls, and exact audio reuse.
 - **Audio ownership:** abandoned pointer holds, delayed/cancelled starts and resumes, late
   success/failure cleanup, at most one live stream per page in covered sequences, fresh
   streams and contexts per take, full graph teardown, stale-callback isolation, clean
@@ -790,11 +802,9 @@ text from silent recordings.
 ### VAD and silence handling
 
 The current adapters use provider-default VAD/chunking, with `chunking_strategy` omitted.
-Local validation detects zero captured samples and empty uploads, rather than recorded
-silence. A nonempty silent WAV reaches the provider and can return unrelated text,
-including conversation vocabulary. Independent silence detection is separate work.
-Keep this risk explicit while evaluating the dictation trial, and review transcripts
-before sending them.
+The HTTP route's [whole-take signal gate](#whole-take-silence-gate) stops clearly quiet
+supported PCM before provider dispatch. Louder non-speech sounds, unsupported input,
+and explicit bypasses can still produce unrelated text. Review transcripts before sending.
 
 The project's live-probe dataset uses an Azure OpenAI `gpt-transcribe` deployment endpoint
 with `api-version=2025-03-01-preview` and conversation vocabulary enabled. In these
@@ -819,6 +829,66 @@ fields such as `chunking_strategy[type]`. Use the scalar form when reproducing t
 automatic-VAD dataset; the current adapter omits the field on both initial and fallback
 requests. Audio reaches the service and remains subject to provider billing. Use
 provider evidence to determine the cause of an empty result.
+
+### Whole-take silence gate
+
+`lib/audio.cjs` inspects the uploaded WAV before the HTTP route extracts vocabulary or
+calls a provider. It recognizes RIFF/WAVE containing one integer-PCM format chunk and
+one data chunk, with 16 kHz mono 16-bit samples and consistent size, byte-rate, and
+alignment fields. Ancillary chunks and their padding are supported. Duplicate format
+or data chunks, incomplete containers, unsupported encoding/rates/channels, fewer than
+320 samples, and more than 128 chunks produce an unknown result and normal forwarding.
+The route's 25 MiB upload limit bounds analysis work; the scanner uses constant extra
+memory and leaves the original bytes intact.
+
+The analyzer computes absolute peak and RMS in 320-sample (20 ms) windows, including
+a final partial window. A take is classified as quiet only when **every** window has
+RMS at most `0.001` and every sample has absolute amplitude at most `0.004`, normalized
+against 32768 for signed 16-bit PCM. A short signal after a long silence can therefore
+pass without a whole-take average diluting it. The thresholds are conservative starting
+values, not a speech classifier or a guarantee against hallucination. Very quiet speech
+can fall below them; louder noise or a click can exceed them. Local device use assesses
+these limits independently of the synthetic test cases.
+
+Quiet takes receive HTTP 422 with `code: "silence_detected"` and an error string, rather
+than a successful empty transcript. This preserves audio in both updated and older
+clients. The updated browser renders a localized silence notice, retains the take and
+its Stop-time conversation, and offers **Transcribe anyway**. An explicit activation
+sends `x-pi-voice-silence-check: bypass` for that upload. The route accepts only that exact
+value, applies it to one request, and keeps it out of provider headers and form fields.
+The marker is caller-controlled, not an authentication mechanism or proof of a human
+click; protect the route through the documented pre-hook access-control layer.
+
+The browser sends a bypass only when a pending take has a recognized silence response
+and the caller explicitly selects that action. Ordinary retries retain normal checks.
+A failed bypass retains the action but makes no automatic resubmission; another click
+can send another bypass request. A new take resets this state. A valid transcript clears
+the silence marker before composer/conversation recovery, so cached text inserts through
+ordinary Retry without another upload. Successful empty provider text retains its own
+notice and pending-take cleanup rules. Client changes require a page reload; handle
+pending takes before deployment or refresh.
+
+The gate applies to every HTTP-route backend, including mock. Direct adapter calls,
+including Doctor, keep their existing provider behavior. Forwarded audio includes the
+complete take, with original pauses; audio analysis introduces neither provider-side
+chunking nor text cleanup. Logs contain `audio_gate` decisions, supported sample counts,
+and normalized peak/max-window-RMS values. Quiet skips explicitly log
+`result=skipped · reason=silence` and `upstream=not-called`; provider results remain
+`empty` or `transcribed`. Use these metadata fields for local threshold evaluation,
+keeping recordings and transcripts in memory and out of service logs.
+
+The **2026-09-10 isolated validation** uses a working tree based on `60e0389`, Node
+26.8.2, and Playwright Chromium. `npm run check` passes type checking, 228 unit tests,
+58 server integration tests, 8 browser harness checks, 77 browser fixture checks, and
+30 real-pi-web/mock checks. The real host path captures synthetic silence, returns the
+hook's 422 notice, and recovers the identical WAV through an explicit bypass with one
+composer insertion and no new microphone acquisition. The speech backend stays mocked.
+Package inspection includes `lib/audio.cjs` without runtime dependencies or build output.
+
+The maintainer's provider-default dictation report describes comfortable single-paragraph
+output and invented text after three to four seconds without speaking. That report
+characterizes the baseline before the whole-take gate. Use local microphone trials to
+assess whether the conservative thresholds cover that environment and retain quiet speech.
 
 ### Vocabulary extraction and limits
 

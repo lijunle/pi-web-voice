@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A dependency-free whole-take signal check before HTTP-route vocabulary extraction
+  and provider calls. Clearly quiet 16 kHz mono PCM WAVs return HTTP 422 with
+  `silence_detected`, preserving the draft and recording instead of sending silence
+  with vocabulary. Unknown audio passes through; window RMS and peak limits are
+  conservative signal heuristics rather than human-speech detection.
+- Localized **Transcribe anyway** / **仍然转写** recovery using the same WAV and a
+  one-request silence-check bypass. It retains conversation binding, explicit retries,
+  and page-memory ownership while keeping the microphone closed. New takes reset the
+  bypass state; successful text retains the existing exact insertion behavior.
+- Metadata-only signal-gate decisions and audio levels in request logs, with an explicit
+  `upstream=not-called` marker for quiet skips. See [silence check and recovery](USAGE.md#silence-check-and-recovery)
+  for limitations and operation.
+
 ### Changed
 
 - Azure OpenAI `gpt-transcribe` sends a fixed English-language dictation prompt requesting
@@ -23,8 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   requests for a provider-default dictation trial, instead of requesting automatic
   VAD-based chunking. Route and fallback logs report `vad=default`, without claiming
   that all internal VAD is disabled. Prompt, vocabulary, language hints, and returned
-  text handling remain intact. Independent silence detection is deferred: nonempty
-  silent recordings still reach the provider and can produce vocabulary-biased text.
+  text handling remain intact. The independent signal gate protects quiet HTTP-route
+  takes; louder non-speech audio, unsupported input, direct adapter calls, and explicit
+  bypasses can still produce vocabulary-biased text.
 
 ## [0.2.0] - 2026-09-08
 

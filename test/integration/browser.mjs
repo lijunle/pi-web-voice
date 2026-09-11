@@ -13,6 +13,7 @@ assert.ok(!process.env.NODE_OPTIONS, "use npm run test:integration so the instal
 const source = readFileSync(new URL("../../public/inject.js", import.meta.url));
 const uploads = [];
 const capturePolicies = [];
+const silenceChecks = [];
 const waiting = new Map();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -30,6 +31,7 @@ const server = http.createServer(async (req, res) => {
       for await (const chunk of req) chunks.push(chunk);
       uploads.push(Buffer.concat(chunks));
       capturePolicies.push(url.searchParams.get("audio_context"));
+      silenceChecks.push(req.headers["x-pi-voice-silence-check"]);
       waiting.set(uploads.length, res);
       return;
     }
@@ -300,6 +302,60 @@ try {
         && window.__piWebVoice.findComposer().value==='Keep my draft Recovered transcript Recovered after gateway failure'
         && window.__piWebVoice.ui.pending===null && window.__piWebVoice.ui.toastElement===null && window.__micOpens===0`));
     await evaluate('Response.prototype.text=window.__originalText; Response.prototype.json=window.__originalJson');
+
+    const silenceStart = uploads.length;
+    const beforeSilence = await evaluate('window.__piWebVoice.findComposer().value');
+    await evaluate(`(() => {
+      const {ui,recorder}=window.__piWebVoice;
+      recorder.chunks=[new Float32Array(4*16000)];
+      recorder.active=true; ui.state='recording'; void ui.stop();
+    })()`);
+    await respond(silenceStart + 1, 422, { code: 'silence_detected', error: 'No audible signal detected' });
+    await idle();
+    const anyway = language === 'en' ? 'Transcribe anyway' : '仍然转写';
+    check(`${language}: a silence skip retains the WAV and gives an explicit bypass action`,
+      silenceChecks[silenceStart] === undefined && await evaluate(`(() => {
+        const {ui,findComposer}=window.__piWebVoice;
+        return ui.pending.wav.size===128044 && ui.pending.silenceDetected===true && ui.pending.text===undefined
+          && ui.retryButton.textContent===${JSON.stringify(anyway)}
+          && ui.toastElement.firstElementChild.textContent.includes('HTTP 422')
+          && findComposer().value===${JSON.stringify(beforeSilence)} && window.__inputs===2;
+      })()`));
+    check(`${language}: the bypass button retains its touch target and accessible label`, await evaluate(`(() => {
+      const b=window.__piWebVoice.ui.retryButton, r=b.getBoundingClientRect();
+      return r.width>=44 && r.height>=44 && r.x>=0 && r.right<=innerWidth
+        && b.getAttribute('aria-label')===b.title && b.title.length>b.textContent.length;
+    })()`));
+    await sleep(4200);
+    check(`${language}: silence retention never starts a paid request automatically`,
+      uploads.length === silenceStart + 1 && await evaluate('window.__piWebVoice.ui.retryButton.isConnected'));
+    await click();
+    await waitFor(() => uploads.length === silenceStart + 2, 'silence bypass upload');
+    await click();
+    await sleep(100);
+    check(`${language}: an explicit bypass is one upload with the exact retained WAV`,
+      uploads.length === silenceStart + 2 && silenceChecks[silenceStart + 1] === 'bypass'
+      && uploads[silenceStart + 1].equals(uploads[silenceStart])
+      && await evaluate('window.__piWebVoice.ui.retryButton.disabled'));
+    await respond(silenceStart + 2, 502, { error: 'Temporary upstream failure' });
+    await idle();
+    check(`${language}: a failed bypass retains the action for another explicit attempt`,
+      await evaluate(`window.__piWebVoice.ui.retryButton.textContent===${JSON.stringify(anyway)}
+        && window.__piWebVoice.ui.pending.silenceDetected && !window.__piWebVoice.ui.retryButton.disabled`));
+    await evaluate('window.__piWebVoice.ui.retryButton.focus()');
+    await page.keyboard.press('Enter');
+    const recovered = 'Accepted.\n原样保留。';
+    await respond(silenceStart + 3, 200, { text: recovered });
+    await idle();
+    check(`${language}: keyboard bypass preserves the returned text and clears the pending take`,
+      silenceChecks[silenceStart + 2] === 'bypass' && uploads[silenceStart + 2].equals(uploads[silenceStart])
+      && await evaluate(`window.__piWebVoice.findComposer().value===${JSON.stringify(beforeSilence + ' ' + recovered)}
+        && window.__inputs===3 && window.__piWebVoice.ui.pending===null && window.__piWebVoice.ui.toastElement===null
+        && window.__micOpens===0 && document.querySelector('.xterm-helper-textarea').value==='Leave the terminal alone'`));
+    await evaluate('window.__recordTake()');
+    await respond(silenceStart + 4, 200, { text: '' });
+    await idle();
+    check(`${language}: a new recording sends no silence bypass`, silenceChecks[silenceStart + 3] === undefined);
   }
 
   // Refresh is intentionally not durable storage. Assert the documented limit

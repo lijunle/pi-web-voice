@@ -183,7 +183,7 @@ for (const v1 of [false, true]) {
   }
 }
 
-test("nonempty silent WAVs reach the provider because local silence detection is separate work", async (t) => {
+test("provider adapters preserve silent WAVs; the HTTP route owns silence gating", async (t) => {
   const silence = toneWav(0.2);
   silence.fill(0, 44);
   const text = "provider text from a silent recording";

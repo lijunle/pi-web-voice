@@ -146,18 +146,17 @@ for the design rationale and source comparisons. In the
 returns multiple lines despite both detailed and minimal single-paragraph prompts.
 Assess pause/chunking behavior separately from prompt wording.
 
-**Silence protection is a known gap in this dictation trial.** Local checks detect zero
-captured samples and zero-byte uploads, rather than recorded silence. A nonempty silent
-WAV still reaches the provider and can produce vocabulary-biased or invented text.
-Independent silence detection is separate work. Speak during a take and review the
-transcript before sending; assess provider-default chunking without treating it as proof
-that every internal VAD is disabled.
+The hook's [silence check](#silence-check-and-recovery) inspects supported PCM WAVs
+before vocabulary extraction or a provider call. It skips clearly quiet takes while
+retaining them for explicit recovery. This is an audio-level check, not human-speech
+recognition: louder noise, unsupported audio, and explicit bypasses can still reach the
+provider and produce invented text. Review transcripts before sending.
 
 Recognition language remains automatic. The structured Azure OpenAI branch gets up to
 three language hints from the browser's `Accept-Language`; English is appended as a
 fallback if it fits within that limit. A valid empty transcription preserves the draft
 and reports an empty result. Assess its cause from the audio and provider behavior.
-Audio reaches the provider and can incur usage charges.
+Forwarded audio reaches the provider and can incur usage charges.
 
 ### Azure AI Speech
 
@@ -260,6 +259,34 @@ mono PCM WAV; a full-length take is about 19.2 MB, below the 25 MiB server uploa
 Each upstream fetch has a 10-minute timeout until response headers arrive. Body reading
 continues outside that timer, and a compatibility fallback starts another timed attempt,
 so overall duration can exceed ten minutes. Proxies and the host server apply their own limits.
+
+### Silence check and recovery
+
+After upload to your pi-web server, the hook checks the full recording before calling
+any transcription backend, including mock. A clearly quiet supported WAV receives
+**HTTP 422** with `code: "silence_detected"`. The browser shows **Server · silence check**
+(or **服务端·静音检测**) and keeps the recording and draft intact. This result means the
+hook skips the speech service; it is distinct from a provider returning empty text.
+
+If you spoke, choose the underlined **Transcribe anyway** / **仍然转写** action. It sends
+the identical WAV with a one-request bypass while keeping the microphone closed.
+Each retry of that bypass requires another explicit action and may incur provider
+charges or produce invented text. A new recording starts with checks enabled.
+Conversation binding, replacement confirmation, and page-memory limits follow the
+[normal retry rules](#retry-and-conversation-changes). A successful response clears the
+silence marker; cached text recovery uses ordinary Retry without another provider call.
+
+The check uses short-window RMS and peak levels rather than whole-recording average
+volume, so a short signal after a long pause can pass. It forwards the complete original
+WAV after a pass, including pauses. Low-energy speech can still be mistaken for silence;
+use Transcribe anyway to recover it. Louder clicks, background noise, malformed or
+unsupported audio, and takes shorter than the analysis window pass through normally.
+Thresholds are fixed starting values for local evaluation, not a speech/no-speech
+guarantee. See [implementation and limits](DEVELOPMENT.md#whole-take-silence-gate).
+
+Use both the updated hook and a refreshed page for the recovery action. Handle pending
+recordings before updating; older client scripts retain the 422 error and audio with
+ordinary Retry, which still passes through the server's check.
 
 ### Retry and conversation changes
 
@@ -377,7 +404,8 @@ pi-web-voice doctor recording.wav    # a WAV file you choose
 Doctor prints resolved settings with the key masked, vocabulary examples, and a
 transcript or diagnosis. An empty result from the generated tone can be normal and
 still demonstrates a successful backend call. Doctor uses the configured provider and
-may incur charges. In mock mode its checks cover local processing only. Use browser
+may incur charges. Doctor calls the adapter directly, outside the HTTP route's silence
+check, including for silent files. In mock mode its checks cover local processing only. Use browser
 checks for microphone capture and end-to-end checks for your production proxy path.
 Review output before sharing: doctor includes paths, endpoint, vocabulary, transcript,
 and potentially detailed errors.
@@ -412,6 +440,7 @@ transport or gateway failures.
 | `Server` | HTTP error response; inspect status, structured error detail, and request ID | HTTP response available |
 | `Server response` | Successful HTTP status with an empty/invalid body or missing/non-string `text`; retry and investigate the server/proxy | Response requires format investigation |
 | `Server · empty transcript` | Valid response contains empty text; review the audio and provider behavior | Successful completion with `0 chars` |
+| `Server · silence check` | Quiet audio is held before a provider call; choose Transcribe anyway if you spoke | HTTP 422, `result=skipped`, `upstream=not-called` |
 | `Client · conversation` / `Client · composer` / `Client` | Local result-handling failure; return to the Stop-time conversation or restore its composer | Cached text supports local recovery |
 
 The browser accepts `{"text":""}` as a successful empty transcription and clears the
@@ -470,8 +499,9 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 `<uuid>` is a placeholder in these examples:
 
 ```text
-[pi-web-voice] 2026-09-07T20:32:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=default · result=empty · 0.5s · 3.0s audio · 60 terms · 0 chars · en
-[pi-web-voice] 2026-09-07T20:33:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=default · result=transcribed · 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · mic opened in 340ms
+[pi-web-voice] 2026-09-07T20:32:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=default · result=empty · 0.5s · 3.0s audio · 60 terms · 0 chars · en · audio_gate=signal · audio_samples=48000 · audio_peak=0.090000 · audio_rms_max=0.050000
+[pi-web-voice] 2026-09-07T20:33:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=default · result=transcribed · 1.2s · 4.6s audio · 37 terms · 58 chars · zh/en · audio_gate=signal · audio_samples=73600 · audio_peak=0.150000 · audio_rms_max=0.020000 · mic opened in 340ms
+[pi-web-voice] 2026-09-10T23:00:00.000Z · request=<uuid> · audio_context=per-take · provider=azure-openai · vad=default · result=skipped · reason=silence · 0.0s · audio_gate=silence · audio_samples=64000 · audio_peak=0.000000 · audio_rms_max=0.000000 · upstream=not-called
 ```
 
 | Field | Interpretation |
@@ -483,6 +513,12 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 | `result=empty` | The response contains empty text; assess its cause from the audio and provider behavior |
 | `result=transcribed` | The provider returns text; confirm insertion in the browser separately |
 | `result=rejected · reason=empty-audio` | The server rejects a zero-byte upload |
+| `result=skipped · reason=silence`, `upstream=not-called` | The signal gate stops this take before vocabulary extraction and a provider call |
+| `audio_gate=silence` / `signal` | Supported PCM falls below both limits / exceeds at least one limit; this is not a human-speech classification |
+| `audio_gate=unknown` | Unsupported, malformed, or too-short audio passes through without a guessed silence result |
+| `audio_gate=bypass` | This request carries the exact bypass header; the server skips analysis |
+| `audio_gate=unchecked` | A caught failure occurs before audio analysis |
+| `audio_samples`, `audio_peak`, `audio_rms_max` | Supported PCM sample count, normalized absolute peak, and maximum window RMS; levels range from 0 to 1 |
 | `result=error`, `upstream_status=…` | Failure with an upstream HTTP status, or `n/a` when that status is unavailable |
 | Elapsed seconds | Route elapsed time, including upload reading and backend work |
 | Audio seconds / terms / chars / languages | Estimated duration from PCM bytes, vocabulary/text counts, and language hints |
@@ -507,8 +543,11 @@ create transcription request logs; cached-text insertion and capture cancellatio
 client-local.
 
 The request-log schema contains metadata only: timestamps, request IDs, audio-context
-policy, provider/VAD/outcome/status fields, timings, counts, and language hints. Detailed
-errors remain part of the caller's response. Provider billing also applies to successful empty results.
+policy, provider/VAD/outcome/status fields, timings, counts, language hints, and bounded
+audio-level metrics. The bypass marker describes request configuration, not verified
+human intent. Detailed errors remain part of the caller's response. Provider billing
+applies to forwarded audio, including successful empty results; silence skips make no
+speech-service call.
 
 ### Health and vocabulary inspection
 
@@ -526,8 +565,9 @@ with access control and share only redacted diagnostic output.
 
 ## Privacy and access control
 
-- Audio travels from the browser to your pi-web origin and then to the configured
-  transcription backend. Conversation-derived vocabulary can accompany it. Mock
+- Audio travels from the browser to your pi-web origin. The signal gate can stop a
+  quiet take there before vocabulary extraction; forwarded takes then reach the configured
+  transcription backend with conversation-derived vocabulary when available. Mock
   generates its response locally.
 - Vocabulary extraction reads only user/assistant prose and skips thinking blocks,
   tool arguments, and tool results. Credential filtering covers specific token-like

@@ -4,7 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { withHost } from "../helpers/host.mjs";
 import { openBrowser, waitFor } from "../helpers/browser.mjs";
 import { mountVoice, installAudio, prepareDraft, recordingReady, released, observeRoundTrip } from "../helpers/voice-page.mjs";
-import { assertRoundTrip } from "../helpers/round-trip.mjs";
+import { assertRoundTrip, readResponseBody } from "../helpers/round-trip.mjs";
 
 let checks = 0;
 function check(name, condition = true) {
@@ -98,8 +98,42 @@ await withHost({ PI_VOICE_PROVIDER: "mock" }, async (origin, signal) => {
       if (take === 0) check("one real mouse click stops across an observed clock tick");
       if (take === 2) check("an audio callback stops the take after ten minutes");
     }
+    // Exercise the actual hook's signal gate with captured synthetic silence,
+    // then recover through the real UI and mock adapter without rewriting text.
+    await prepareDraft(page);
+    await page.evaluate(() => { window.__audioTest.deferred = false; window.__audioTest.silent = true; });
+    await mic.click();
+    await recordingReady(page);
+    const responseForVoice = () => page.waitForResponse(response =>
+      new URL(response.url()).pathname === "/__voice/transcribe" && response.request().method() === "POST", { timeout: 15_000 });
+    const [skipped] = await Promise.all([responseForVoice(), mic.click()]);
+    const skipBody = await readResponseBody(skipped);
+    await released(page);
+    const silentWav = skipped.request().postDataBuffer();
+    check("a real silent capture gets HTTP 422 from the hook before mock transcription",
+      skipped.status() === 422 && skipBody.code === "silence_detected" && skipBody.text === undefined
+      && silentWav.length > 44 && silentWav.subarray(44).every(byte => byte === 0));
+    check("the silence notice preserves the real composer and retained take", await page.evaluate(() =>
+      window.__piWebVoice.findComposer().value === "Before selected after" && window.__voiceInputs === 0
+      && window.__piWebVoice.ui.pending?.silenceDetected === true
+      && window.__piWebVoice.ui.retryButton.textContent === "Transcribe anyway"));
+    const opens = await page.evaluate(() => window.__audioTest.calls);
+    const [bypassed] = await Promise.all([responseForVoice(), page.locator("#pi-web-voice-retry").click()]);
+    const recovered = await readResponseBody(bypassed);
+    await released(page);
+    check("explicit silence recovery resends the same WAV with a request-scoped bypass",
+      bypassed.status() === 200 && bypassed.request().headers()["x-pi-voice-silence-check"] === "bypass"
+      && bypassed.request().postDataBuffer().equals(silentWav));
+    assertRoundTrip({ body: recovered, ...await page.evaluate(() => ({
+      composed: window.__piWebVoice.findComposer().value, inputs: window.__voiceInputs,
+      pending: window.__piWebVoice.ui.pending !== null, notice: window.__piWebVoice.ui.toastElement !== null,
+      terminal: document.querySelector(".xterm-helper-textarea").value,
+    })) }, "mock");
+    check("silence recovery inserts exactly once and clears its pending audio");
+    check("silence recovery keeps the microphone closed", await page.evaluate(count => window.__audioTest.calls === count, opens));
+
     check("voice never submits chat or starts an agent", traffic.violations.length === 0);
-    assert.equal(traffic.uploads, 3, "only the three deliberate recordings upload");
+    assert.equal(traffic.uploads, 5, "three audible takes, one silence skip, and one explicit bypass upload");
     check("all recorded takes use distinct contexts", await page.evaluate(() =>
       new Set(window.__audioTest.contexts).size === window.__audioTest.contexts.length));
   } finally {

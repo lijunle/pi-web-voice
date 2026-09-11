@@ -102,6 +102,9 @@
         denied: "麦克风权限被拒绝",
         empty: "[服务端·空结果] 音频已提交，但服务器未返回转写文字",
         captureEmpty: "[客户端·录音] 未采集到音频，未上传。请重新录音；若仍失败，请关闭并重新打开此页面",
+        silence: "[服务端·静音检测] 未检测到有效声音，未调用语音服务。录音已保留；若你有说话，可以选择仍然转写",
+        transcribeAnyway: "仍然转写",
+        transcribeAnywayTitle: "仍然转写 — 本次跳过静音检测，使用保留的录音；可能产生费用或幻觉文字",
         microphoneFailed: "[客户端·麦克风] 无法启动麦克风",
         audioFailed: "[客户端·音频] 音频上下文未能启动。请重新录音；若仍失败，请关闭并重新打开此页面",
         networkFailed: "[网络] 无法完成转写请求，录音已保留，可重试",
@@ -130,6 +133,9 @@
         denied: "Microphone permission denied",
         empty: "[Server · empty transcript] Audio was submitted, but the server returned no transcription text",
         captureEmpty: "[Client · recording] No audio was captured; nothing was uploaded. Record again; if this persists, close and reopen this page",
+        silence: "[Server · silence check] No audible signal detected; speech service not called. Recording kept; choose Transcribe anyway if you spoke",
+        transcribeAnyway: "Transcribe anyway",
+        transcribeAnywayTitle: "Transcribe anyway — skip the silence check for this request using the kept recording; provider charges or invented text are possible",
         microphoneFailed: "[Client · microphone] Could not start the microphone",
         audioFailed: "[Client · audio] Audio context could not start. Record again; if this persists, close and reopen this page",
         networkFailed: "[Network] Could not complete the transcription request; recording kept for retry",
@@ -152,6 +158,7 @@
   // Expected failures already have a source-specific message. Unexpected local
   // exceptions must not be mislabeled as a speech-service failure.
   class VoiceError extends Error {}
+  class SilenceDetectedError extends VoiceError {}
 
   function responseMessage(message, response) {
     const details = [];
@@ -198,6 +205,9 @@
       throw invalid(html ? T.responseHtml : json ? T.responseInvalidJson : T.responseNonJson);
     }
 
+    if (response.status === 422 && result?.code === "silence_detected") {
+      throw new SilenceDetectedError(responseMessage(T.silence, response));
+    }
     if (!response.ok) {
       const detail = [result?.error, result?.error?.message, result?.message, result?.detail, result]
         .find((value) => typeof value === "string" && value.trim());
@@ -612,7 +622,10 @@
       if (!this.pending) return this.clearToast();
       const working = this.state === "working";
       this.retryButton.disabled = this.state !== "idle" || this.arming;
-      this.retryButton.textContent = working ? T.working : T.retry;
+      const silence = this.pending.silenceDetected === true;
+      this.retryButton.textContent = working ? T.working : silence ? T.transcribeAnyway : T.retry;
+      this.retryButton.title = silence ? T.transcribeAnywayTitle : T.retryTitle;
+      this.retryButton.setAttribute("aria-label", this.retryButton.title);
       this.retryButton.setAttribute("aria-busy", working ? "true" : "false");
     },
 
@@ -654,7 +667,7 @@
         retry.type = "button";
         retry.title = T.retryTitle;
         retry.setAttribute("aria-label", T.retryTitle);
-        retry.addEventListener("click", () => this.retry());
+        retry.addEventListener("click", () => this.retry(this.pending?.silenceDetected === true));
         retry.addEventListener("mousedown", (event) => event.preventDefault());
         toast.appendChild(retry);
         this.retryButton = retry;
@@ -757,9 +770,10 @@
       return this.retry();
     },
 
-    async retry() {
+    async retry(transcribeAnyway = false) {
       if (this.state !== "idle" || this.arming || !this.pending) return;
       const take = this.pending;
+      const bypassSilence = transcribeAnyway === true && take.silenceDetected === true;
       const sameSession = () => take.sessionId === sessionId && take.cwd === currentCwd();
       this.state = "working";
       this.render();
@@ -771,7 +785,10 @@
           try {
             response = await nativeFetch(take.url, {
               method: "POST",
-              headers: { "content-type": "audio/wav" },
+              headers: {
+                "content-type": "audio/wav",
+                ...(bypassSilence ? { "x-pi-voice-silence-check": "bypass" } : {}),
+              },
               body: take.wav,
               credentials: "include",
             });
@@ -779,6 +796,7 @@
             throw new VoiceError(`${T.networkFailed}: ${error.message}`);
           }
           take.text = await readTranscriptResponse(response);
+          take.silenceDetected = false;
           take.emptyMessage = responseMessage(T.empty, response);
         }
 
@@ -801,6 +819,7 @@
         }
         this.pending = null;
       } catch (error) {
+        if (error instanceof SilenceDetectedError) take.silenceDetected = true;
         const message = error instanceof VoiceError ? error.message : `${T.clientFailed}: ${error.message}`;
         this.toast(message, true, true);
       } finally {

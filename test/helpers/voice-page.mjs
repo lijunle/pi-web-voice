@@ -52,7 +52,7 @@ export async function mountVoice(page, origin, options) {
 export async function installAudio(page, wavBase64 = null) {
   await page.evaluate(base64 => {
     const Native = window.AudioContext;
-    const state = window.__audioTest = { contexts: [], sources: [], openings: [], calls: 0, peak: 0, deferred: false };
+    const state = window.__audioTest = { contexts: [], sources: [], openings: [], calls: 0, peak: 0, deferred: false, silent: false };
     window.AudioContext = class extends Native {
       constructor(...args) { super(...args); state.contexts.push(this); }
     };
@@ -68,7 +68,10 @@ export async function installAudio(page, wavBase64 = null) {
               const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
               source.buffer = await context.decodeAudioData(bytes.buffer);
             } else source.frequency.value = 440;
-            source.connect(destination);
+            const gain = context.createGain();
+            gain.gain.value = state.silent ? 0 : 1;
+            source.connect(gain);
+            gain.connect(destination);
             const entry = { context, source, stream: destination.stream, ended: false };
             source.onended = () => { entry.ended = true; };
             state.sources.push(entry);

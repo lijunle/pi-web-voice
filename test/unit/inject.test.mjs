@@ -159,7 +159,7 @@ for (const text of ["", " \n\t "]) {
     const h = harness(text);
     h.composer.setSelectionRange(2, 5);
     await h.ui.stop();
-    assert.equal(h.requests.length, 1, "no local duration or loudness gate replaces service VAD");
+    assert.equal(h.requests.length, 1, "the browser uploads the full take for the hook's signal check");
     assert.equal(h.requests[0].url, "/__voice/transcribe?audio_context=per-take");
     assert.equal(h.requests[0].body.size, 44 + 3 * 16000 * 2);
     assert.equal(h.composer.value, "Keep my draft");
@@ -170,8 +170,151 @@ for (const text of ["", " \n\t "]) {
     assert.equal(h.terminal.value, "Do not touch the terminal");
     assert.deepEqual(h.notices, [SERVER_EMPTY]);
     assert.equal(h.ui.state, "idle");
-    assert.equal(h.ui.pending, null, "a successful VAD response is not a retryable error");
+    assert.equal(h.ui.pending, null, "an explicit provider-empty response is not a silence-gate rejection");
     assert.equal(h.recorder.active, false);
+  });
+}
+
+for (const [language, label, prefix] of [
+  ["en", "Transcribe anyway", "[Server · silence check]"],
+  ["zh-CN", "仍然转写", "[服务端·静音检测]"],
+]) {
+  test(`${language} silence detection preserves the draft and recording for explicit bypass`, async () => {
+    const h = harness("", { language });
+    const id = "9f1c9430-7a9d-4b88-9ea8-28741722f92a";
+    h.composer.setSelectionRange(2, 5);
+    h.setResponse(() => jsonResponse({ code: "silence_detected", error: "PRIVATE_SERVER_DETAIL" }, 422,
+      { "x-pi-voice-request-id": id }));
+    await h.ui.stop();
+    const take = h.ui.pending;
+    assert.ok(take?.wav);
+    assert.equal(take.text, undefined);
+    assert.equal(take.silenceDetected, true);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.requests[0].headers["x-pi-voice-silence-check"], undefined);
+    assert.equal(h.composer.value, "Keep my draft");
+    assert.deepEqual([h.composer.selectionStart, h.composer.selectionEnd], [2, 5]);
+    assert.equal(h.composer.focused, false);
+    assert.deepEqual(h.composer.events, []);
+    assert.ok(h.notices[0].startsWith(prefix));
+    assert.match(h.notices[0], /HTTP 422/);
+    assert.ok(h.notices[0].includes(id));
+    assert.doesNotMatch(h.notices[0], /PRIVATE_SERVER_DETAIL/);
+    assert.equal(h.ui.retryButton.textContent, label);
+    assert.match(h.ui.retryButton.title, language === "en" ? /skip the silence check/ : /跳过静音检测/);
+    assert.equal(h.ui.retryButton.attributes["aria-label"], h.ui.retryButton.title);
+    h.advanceTime(10_000);
+    assert.equal(h.ui.pending, take);
+    assert.ok(h.ui.toastElement?.parentElement);
+    assert.equal(h.requests.length, 1, "no automatic bypass");
+    h.recorder.start = () => assert.fail("bypass keeps the microphone closed");
+    h.recorder.stop = () => assert.fail("bypass uses the retained WAV");
+    await h.ui.retry();
+    assert.equal(h.requests[1].headers["x-pi-voice-silence-check"], undefined, "ordinary retry does not silently bypass");
+    h.setResponse(() => success("好。\nYes."));
+    await h.ui.retry(true);
+    assert.equal(h.requests.length, 3);
+    assert.equal(h.requests[2].headers["x-pi-voice-silence-check"], "bypass");
+    assert.ok(h.requests.every(request => request.body === take.wav && request.url === take.url));
+    assert.equal(h.composer.value, "Ke 好。\nYes.my draft");
+    assert.deepEqual(h.composer.events, ["input"]);
+    assert.equal(h.terminal.value, "Do not touch the terminal");
+    assert.equal(h.ui.pending, null);
+    assert.equal(h.ui.toastElement, null);
+  });
+}
+
+test("bypass needs a silence response and one explicit activation per upload", async () => {
+  const h = harness("");
+  h.setResponse(networkFailure);
+  await h.ui.stop();
+  await h.ui.retry(true);
+  assert.ok(h.requests.every(r => r.headers["x-pi-voice-silence-check"] === undefined));
+  h.setResponse(() => jsonResponse({ code: "silence_detected" }, 422));
+  await h.ui.retry();
+  const take = h.ui.pending;
+  const response = deferred();
+  h.setResponse(() => response.promise);
+  const attempt = h.ui.retry(true);
+  await h.ui.retry(true);
+  assert.equal(h.requests.length, 4);
+  assert.equal(h.ui.retryButton.disabled, true);
+  response.reject(new TypeError("Offline"));
+  await attempt;
+  assert.equal(h.ui.pending, take);
+  assert.equal(h.ui.retryButton.textContent, "Transcribe anyway");
+  assert.equal(h.ui.retryButton.disabled, false);
+  h.setResponse(() => success(""));
+  await h.ui.retry(true);
+  assert.equal(h.requests.length, 5);
+  assert.equal(h.requests[4].headers["x-pi-voice-silence-check"], "bypass");
+  assert.equal(h.ui.pending, null);
+  assert.equal(h.composer.value, "Keep my draft");
+  assert.match(h.notices.at(-1), /Server · empty transcript/);
+});
+
+test("silence recovery stays tied to its conversation and caches a successful result", async () => {
+  const h = harness("");
+  new h.window.EventSource("/api/agent/original/events");
+  h.setResponse(() => jsonResponse({ code: "silence_detected" }, 422));
+  await h.ui.stop();
+  const take = h.ui.pending;
+  new h.window.EventSource("/api/agent/other/events");
+  await h.ui.retry(true);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.ui.pending, take);
+  assert.match(h.notices.at(-1), /conversation/);
+  new h.window.EventSource("/api/agent/original/events");
+  const response = deferred();
+  h.setResponse(() => response.promise);
+  const attempt = h.ui.retry(true);
+  new h.window.EventSource("/api/agent/other/events");
+  response.resolve(success("Kept text"));
+  await attempt;
+  assert.equal(h.ui.pending.text, "Kept text");
+  assert.equal(h.ui.pending.silenceDetected, false);
+  assert.equal(h.ui.retryButton.textContent, "Retry");
+  new h.window.EventSource("/api/agent/original/events");
+  await h.ui.retry();
+  assert.equal(h.requests.length, 2, "cached text recovery is not a third upload");
+  assert.equal(h.composer.value, "Keep my draft Kept text");
+  assert.equal(h.ui.pending, null);
+});
+
+test("a replacement recording starts with silence checks enabled", async () => {
+  const h = harness("");
+  h.setResponse(() => jsonResponse({ code: "silence_detected" }, 422));
+  await h.ui.stop();
+  const previous = h.ui.pending;
+  h.window.confirm = () => false;
+  await h.ui.start();
+  assert.equal(h.ui.pending, previous);
+  h.window.confirm = () => true;
+  h.recorder.start = async () => { h.recorder.active = true; h.recorder.startedAt = Date.now(); };
+  await h.ui.start();
+  assert.equal(h.ui.pending, null);
+  h.recorder.chunks = [new Float32Array(320)];
+  h.setResponse(() => success("new take"));
+  await h.ui.stop();
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].headers["x-pi-voice-silence-check"], undefined);
+  assert.equal(h.ui.pending, null);
+});
+
+for (const [status, body] of [
+  [400, { code: "silence_detected", error: "ordinary failure" }],
+  [422, { code: "unknown", error: "ordinary failure" }],
+  [422, { code: ["silence_detected"] }],
+  [422, null],
+]) {
+  test(`only the exact silence status/code enables bypass: ${status} ${JSON.stringify(body)}`, async () => {
+    const h = harness("");
+    h.setResponse(() => jsonResponse(body, status));
+    await h.ui.stop();
+    assert.notEqual(h.ui.pending.silenceDetected, true);
+    assert.equal(h.ui.retryButton.textContent, "Retry");
+    await h.ui.retry(true);
+    assert.equal(h.requests[1].headers["x-pi-voice-silence-check"], undefined);
   });
 }
 

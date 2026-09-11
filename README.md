@@ -20,6 +20,8 @@ caret in the chat composer: review it, edit it, then send.
   or an OpenAI-compatible service such as OpenAI, Groq, or a local whisper server.
 - **Retry the same recording.** Resubmit a failed take from page memory while the
   microphone stays closed.
+- **Check quiet takes before transcription.** The hook checks for very low audio levels
+  before calling a speech service. Use **Transcribe anyway** to recover a quiet take.
 - **Review before sending.** Transcripts go into the composer for you to edit and send.
   The microphone button also works with the keyboard and VoiceOver.
 
@@ -75,8 +77,8 @@ speech backend when you want speech recognition.
 
 - **Use HTTPS or localhost.** These browser-trusted origins enable microphone capture.
   See [remote access and deployment](https://github.com/lijunle/pi-web-voice/blob/main/USAGE.md#deployment-and-remote-access) for LAN and remote setup.
-- **Audio and vocabulary go to your configured transcription service.** Credentials
-  stay in server-side configuration. See [privacy and access control](https://github.com/lijunle/pi-web-voice/blob/main/USAGE.md#privacy-and-access-control).
+- **Forwarded audio and vocabulary go to your configured transcription service.**
+  The silence check runs at your pi-web server; credentials stay in server-side configuration. See [privacy and access control](https://github.com/lijunle/pi-web-voice/blob/main/USAGE.md#privacy-and-access-control).
 - **Retry before reloading.** A pending take lives in page memory; refreshing, closing,
   or discarding the page clears it. Each additional upload may incur another provider charge.
 
