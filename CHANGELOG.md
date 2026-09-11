@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-11
+
 ### Added
 
 - A dependency-free whole-take signal check before HTTP-route vocabulary extraction
@@ -20,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Metadata-only signal-gate decisions and audio levels in request logs, with an explicit
   `upstream=not-called` marker for quiet skips. See [silence check and recovery](USAGE.md#silence-check-and-recovery)
   for limitations and operation.
-- Additional unreleased-feature regressions for bypass/upload limits, upstream 422
+- Additional regressions for bypass/upload limits, upstream 422
   separation, pending response bodies, cancelled replacement recordings, bounded
   vocabulary fallback, and PCM container boundaries, including Node 20.0.0 validation.
 
@@ -34,11 +36,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keeps ambiguous wording, and treats dictated questions and instructions as content.
   The prompt accompanies structured vocabulary/language hints, applies without conversation
   vocabulary, and remains in the keyword fallback. Transcripts retain the provider's
-  words and internal line breaks for user review; style adherence depends on the model. See [dictation style guidance](DEVELOPMENT.md#dictation-style-guidance)
-  for the prompt's design references.
+  words and internal line breaks for user review; style adherence depends on the model.
+  See [dictation style guidance](DEVELOPMENT.md#dictation-style-guidance) for the prompt's
+  design references.
 - Azure OpenAI `gpt-transcribe` omits `chunking_strategy` on initial and fallback
-  requests for a provider-default dictation trial, instead of requesting automatic
-  VAD-based chunking. Route and fallback logs report `vad=default`, without claiming
+  requests, using provider-default chunking instead of requesting automatic VAD-based
+  chunking. Route and fallback logs report `vad=default`, without claiming
   that all internal VAD is disabled. Prompt, vocabulary, language hints, and returned
   text handling remain intact. The independent signal gate protects quiet HTTP-route
   takes; louder non-speech audio, unsupported input, direct adapter calls, and explicit
@@ -231,7 +234,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Health and vocabulary inspection endpoints, transcription metadata logging, HTTP
   interception tests, and a headless-browser integration suite.
 
-[Unreleased]: https://github.com/lijunle/pi-web-voice/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/lijunle/pi-web-voice/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/lijunle/pi-web-voice/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lijunle/pi-web-voice/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/lijunle/pi-web-voice/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/lijunle/pi-web-voice/compare/v0.1.5...v0.1.6
