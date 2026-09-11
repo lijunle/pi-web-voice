@@ -406,11 +406,14 @@ recognition, exactly-once draft insertion, terminal isolation, and audio cleanup
 The README's E2E badge reports the latest manual `main` run, independently of the
 per-commit CI checks.
 
-Publish has no execution in this record. Its tag/version and registry guards have
-isolated unit coverage using mock registry responses. The `npm` environment restricts
-deployments to `v*` tags with no required reviewers or wait timer; actual publication
-still requires npm trusted publisher configuration. CI passes independently with no
-speech keys or npm publication.
+[Publish run 34271395860](https://github.com/lijunle/pi-web-voice/actions/runs/34271395860)
+validates and publishes `v0.2.0` from commit `0af3700`. Tag validation, all five reusable
+CI jobs, and the npm trusted-publishing/provenance step succeed. The npm registry contains
+version `0.2.0`; a GitHub Release entry is optional and separate from this tag-triggered
+workflow. The tag/version and registry guards also have isolated unit coverage using
+mock registry responses. The `npm` environment restricts deployments to `v*` tags with
+no required reviewers or wait timer. Ordinary CI requires neither speech keys nor an
+npm publication.
 
 #### Configure live E2E
 
@@ -461,15 +464,16 @@ It obtains short-lived publishing credentials through OIDC; keep a long-lived np
 out of GitHub Secrets. Dependency installation and publication use `--ignore-scripts`,
 and the compiler has no build output to publish.
 
-For a release, use a stable package version such as `0.2.0` and the matching tag
-`v0.2.0`:
+For a release, choose an unpublished stable package version and its matching tag.
+The commands below use `0.3.0` and `v0.3.0` as examples; check registry availability
+before selecting a version:
 
 1. Select an unused version. Update `package.json` and `package-lock.json` with
-   `npm version 0.2.0 --no-git-tag-version`, and prepare its dated changelog entry.
+   `npm version 0.3.0 --no-git-tag-version`, and prepare its dated changelog entry.
 2. Run `npm run check`, inspect `npm pack --dry-run --ignore-scripts`, and commit the
    release preparation. The tagged commit includes the tag-triggered workflow.
-3. Push the commit to `main`, create its tag with `git tag v0.2.0`, and push only that
-   new tag with `git push origin v0.2.0`.
+3. Push the commit to `main`, create its tag with `git tag v0.3.0`, and push only that
+   new tag with `git push origin v0.3.0`.
 4. Observe **Actions → Publish**. It validates the version, runs the complete reusable
    CI, then publishes the tagged commit to npm with provenance. Publishing is automatic;
    a GitHub Release and a deployment approval are not required.
@@ -478,9 +482,9 @@ The workflow reads the tag from `github.ref_name`, verifies package/lockfile ver
 and repository identity, and confirms that the version is absent from npm. It rejects
 prerelease/build-metadata versions, malformed stable versions, and mismatched tags.
 Deleted or moved tags are skipped; branch pushes run ordinary CI only. Keep published
-tags immutable and use a new version for each publication; `0.1.7` already exists in
-the registry. Optional GitHub Releases can supply release notes. Live speech credentials
-and E2E success are separate from this publishing gate.
+tags immutable and use a new version for each publication. Check `npm view pi-web-voice version`
+for the current registry release. Optional GitHub Releases can supply release notes.
+Live speech credentials and E2E success are separate from this publishing gate.
 
 ### Automated coverage
 
@@ -495,19 +499,22 @@ and E2E success are separate from this publishing gate.
   encodings, immutable object/raw headers, content-length handling, compressed/alternative
   charset pass-through, callbacks, fluent return values, and single-call error propagation.
 - **Provider contracts:** omission of explicit chunking settings, fixed Azure GPT
-  dictation guidance, empty/nonempty results, requests with empty vocabulary, keyword
-  fallback with style retained, silent-WAV forwarding, provider text preservation,
-  provider registry membership, JSON
-  container validation, and provider-specific request shapes.
+  dictation guidance, empty/nonempty results, requests with empty vocabulary,
+  bounded fallback vocabulary with style retained, non-400 error propagation without
+  retry, direct-adapter silent-WAV forwarding, provider text preservation, provider
+  registry membership, JSON container validation, and provider-specific request shapes.
 - **Boundary guards and vocabulary:** unknown exceptions, hostile getters/proxies,
   integer status metadata, malformed session records, long/EOF-terminated headers,
   exact session IDs, string working directories, and prose-only extraction.
 - **Routes and logs:** binary stream validation, distinct request IDs and outcomes for
   repeated uploads, timing/status fields, quiet-take skips before vocabulary extraction,
-  exact one-request bypass markers, and metadata-only signal metrics.
+  exact one-request bypass markers, upload limits during bypass, provider 422 separation,
+  compatibility fallbacks after bypass, and metadata-only signal metrics. Normal HTTP
+  fixture requests use valid signal-bearing PCM to exercise the analyzed path.
 - **Signal gate:** quiet PCM and low-level synthetic noise, local RMS/peak boundaries,
   short signals after long silence, partial windows, attenuated synthetic speech,
-  supported ancillary chunks, bounded malformed/unsupported WAV handling, and byte preservation.
+  supported ancillary chunks, exact chunk-budget boundaries, deterministic RIFF mutations,
+  bounded malformed/unsupported WAV handling, and byte preservation.
 - **Composer and retry:** identical WAV reuse, explicit sequential resubmission,
   conversation binding, cached-text recovery, replacement confirmation, and terminal isolation.
   Silence recovery covers localized notices, explicit-only bypass, repeated failures,
@@ -709,9 +716,9 @@ The [OpenAI transcription guide](https://developers.openai.com/api/docs/guides/s
 identifies formatting as a use of `prompt` alongside `keywords` and `languages`.
 This project applies guidance in the existing Azure transcription request, uses
 provider-default chunking with conversation vocabulary, and preserves the resulting
-text apart from outer whitespace. Evaluate sentence boundaries, omissions, multilingual terms, and meaningful
-short responses with representative audio; mocked tests establish request and return
-contracts rather than recognition quality.
+text apart from outer whitespace. Evaluate sentence boundaries, omissions, multilingual
+terms, and meaningful short responses with representative audio; mocked tests establish
+request and return contracts rather than recognition quality.
 
 #### Live prompt and chunking probe
 
@@ -887,8 +894,31 @@ Package inspection includes `lib/audio.cjs` without runtime dependencies or buil
 
 The maintainer's provider-default dictation report describes comfortable single-paragraph
 output and invented text after three to four seconds without speaking. That report
-characterizes the baseline before the whole-take gate. Use local microphone trials to
-assess whether the conservative thresholds cover that environment and retain quiet speech.
+characterizes the baseline before the whole-take gate. The signal-gate follow-up reports
+successful empty-recording detection in local use. The report supplies no exact device
+or browser version; treat it as a focused positive check and continue testing quiet
+speech and background noise separately.
+
+#### Unreleased review
+
+The **2026-09-11 review** covers changes from published `v0.2.0` through the signal-gate
+implementation at `6e9bd1c`, plus the review's test and documentation checks. The runtime
+implementation and thresholds match `6e9bd1c`; the review focuses on boundary coverage
+and consistency of the guides with code and release evidence.
+
+- **Full check, Node 26.8.2:** `npm run check` passes type checking, 239 unit tests,
+  62 server integration tests, 8 browser harness checks, 77 browser fixture checks,
+  and 30 real-pi-web/mock checks.
+- **Minimum runtime, Node 20.0.0:** type checking, all 239 unit tests, and all 62 native
+  server integration tests pass. Suite supervision owns process and temporary-file
+  cleanup; browser/host tests use the Node 26 environment above.
+- **Boundary coverage:** pending bypass response bodies, denied/cancelled replacement
+  openings, exact HTTP status/code recognition, provider 422 separation, upload limits
+  during bypass, bounded vocabulary fallback, non-400 failures, and RIFF chunk limits.
+- **Scope:** speech services stay mocked, and the runtime keeps dependency-free,
+  build-free execution. Package inspection and local documentation links complement
+  the code checks. Real noise classification and universal prompt adherence remain
+  outside these automated guarantees.
 
 ### Vocabulary extraction and limits
 

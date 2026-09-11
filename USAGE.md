@@ -271,7 +271,9 @@ hook skips the speech service; it is distinct from a provider returning empty te
 If you spoke, choose the underlined **Transcribe anyway** / **仍然转写** action. It sends
 the identical WAV with a one-request bypass while keeping the microphone closed.
 Each retry of that bypass requires another explicit action and may incur provider
-charges or produce invented text. A new recording starts with checks enabled.
+charges or produce invented text. One browser upload can still trigger the backend's
+[compatibility fallback](DEVELOPMENT.md#provider-requests-and-fallbacks). A new recording
+starts with checks enabled.
 Conversation binding, replacement confirmation, and page-memory limits follow the
 [normal retry rules](#retry-and-conversation-changes). A successful response clears the
 silence marker; cached text recovery uses ordinary Retry without another provider call.
@@ -279,14 +281,15 @@ silence marker; cached text recovery uses ordinary Retry without another provide
 The check uses short-window RMS and peak levels rather than whole-recording average
 volume, so a short signal after a long pause can pass. It forwards the complete original
 WAV after a pass, including pauses. Low-energy speech can still be mistaken for silence;
-use Transcribe anyway to recover it. Louder clicks, background noise, malformed or
-unsupported audio, and takes shorter than the analysis window pass through normally.
+use Transcribe anyway to recover it. Clicks and noise above the thresholds pass through,
+as do malformed or unsupported audio and takes shorter than the analysis window.
 Thresholds are fixed starting values for local evaluation, not a speech/no-speech
 guarantee. See [implementation and limits](DEVELOPMENT.md#whole-take-silence-gate).
 
-Use both the updated hook and a refreshed page for the recovery action. Handle pending
-recordings before updating; older client scripts retain the 422 error and audio with
-ordinary Retry, which still passes through the server's check.
+Use both the updated hook and a refreshed page for the recovery action. Refresh an idle
+page before recording against the updated hook, and handle pending recordings before
+updating or refreshing. Older scripts retain the 422 error and audio but offer only
+ordinary Retry, which repeats the check; the bypass control requires updated client code.
 
 ### Retry and conversation changes
 
@@ -405,8 +408,8 @@ Doctor prints resolved settings with the key masked, vocabulary examples, and a
 transcript or diagnosis. An empty result from the generated tone can be normal and
 still demonstrates a successful backend call. Doctor uses the configured provider and
 may incur charges. Doctor calls the adapter directly, outside the HTTP route's silence
-check, including for silent files. In mock mode its checks cover local processing only. Use browser
-checks for microphone capture and end-to-end checks for your production proxy path.
+check, including for silent files. In mock mode its checks cover local processing only.
+Use browser checks for microphone capture and end-to-end checks for your production proxy path.
 Review output before sharing: doctor includes paths, endpoint, vocabulary, transcript,
 and potentially detailed errors.
 
@@ -514,7 +517,7 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 | `result=transcribed` | The provider returns text; confirm insertion in the browser separately |
 | `result=rejected · reason=empty-audio` | The server rejects a zero-byte upload |
 | `result=skipped · reason=silence`, `upstream=not-called` | The signal gate stops this take before vocabulary extraction and a provider call |
-| `audio_gate=silence` / `signal` | Supported PCM falls below both limits / exceeds at least one limit; this is not a human-speech classification |
+| `audio_gate=silence` / `signal` | Supported PCM is at or below both limits / exceeds at least one limit; this is not a human-speech classification |
 | `audio_gate=unknown` | Unsupported, malformed, or too-short audio passes through without a guessed silence result |
 | `audio_gate=bypass` | This request carries the exact bypass header; the server skips analysis |
 | `audio_gate=unchecked` | A caught failure occurs before audio analysis |
@@ -524,11 +527,13 @@ returns that ID in `x-pi-voice-request-id`; match the browser Network header to 
 | Audio seconds / terms / chars / languages | Estimated duration from PCM bytes, vocabulary/text counts, and language hints |
 | `mic opened in …ms` | Accepted activation to microphone/audio-graph readiness |
 
-The request label includes the VAD policy and audio-context marker before upload validation, so both
-also appear on upload rejections and caught failures. The audio-context field accepts
-only the fixed `per-take` marker; all other values become `unspecified`. It describes a
+The request label includes the VAD policy and audio-context marker before upload
+validation, so both also appear on upload rejections and caught failures. The audio-context
+field accepts only the fixed `per-take` marker; all other values become `unspecified`. It describes a
 client-reported policy, not server verification of context creation or audio health.
 The VAD field records request configuration; outcome fields describe processing results.
+Audio levels are rounded to six decimal places in logs; threshold comparisons use
+unrounded values, so a boundary-level signal can appear equal to a printed limit.
 
 Microphone timing starts at accepted activation after replacement confirmation and ends
 at audio-graph readiness. Pointer-hold time is outside that interval. Retry reuses the

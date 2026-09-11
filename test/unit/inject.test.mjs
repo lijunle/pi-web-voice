@@ -253,6 +253,59 @@ test("bypass needs a silence response and one explicit activation per upload", a
   assert.match(h.notices.at(-1), /Server · empty transcript/);
 });
 
+test("a bypass stays locked while reading the response body", async () => {
+  const h = harness("");
+  h.setResponse(() => jsonResponse({ code: "silence_detected" }, 422));
+  await h.ui.stop();
+  let controller;
+  const body = new ReadableStream({ start(value) { controller = value; } });
+  const reading = deferred();
+  const reply = rawResponse(body, 200, "application/json");
+  const read = reply.text.bind(reply);
+  reply.text = () => { reading.resolve(); return read(); };
+  h.setResponse(() => reply);
+  const take = h.ui.pending;
+  const attempt = h.ui.retry(true);
+  await reading.promise;
+  await Promise.all([h.ui.retry(true), h.ui.retry(), h.ui.start()]);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.ui.retryButton.disabled, true);
+  assert.equal(h.ui.pending, take);
+  controller.enqueue(new TextEncoder().encode(JSON.stringify({ text: "Recovered once" })));
+  controller.close();
+  await attempt;
+  assert.equal(h.composer.value, "Keep my draft Recovered once");
+  assert.deepEqual(h.composer.events, ["input"]);
+  assert.equal(h.requests[1].headers["x-pi-voice-silence-check"], "bypass");
+  assert.equal(h.ui.pending, null);
+});
+
+test("denied and cancelled replacement openings preserve silence recovery", async () => {
+  const h = harness("");
+  h.setResponse(() => jsonResponse({ code: "silence_detected" }, 422));
+  await h.ui.stop();
+  const take = h.ui.pending;
+  h.recorder.start = async () => { throw Object.assign(new Error("Denied"), { name: "NotAllowedError" }); };
+  await h.ui.start();
+  assert.equal(h.ui.pending, take);
+  assert.equal(take.silenceDetected, true);
+  assert.equal(h.ui.retryButton.textContent, "Transcribe anyway");
+  const opening = deferred();
+  h.recorder.start = () => opening.promise;
+  const started = h.ui.start();
+  await h.ui.stop();
+  opening.resolve();
+  await started;
+  assert.equal(h.ui.pending, take);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.ui.retryButton.disabled, false);
+  h.setResponse(() => success("Recovered"));
+  await h.ui.retry(true);
+  assert.equal(h.requests[1].body, take.wav);
+  assert.equal(h.requests[1].headers["x-pi-voice-silence-check"], "bypass");
+  assert.equal(h.ui.pending, null);
+});
+
 test("silence recovery stays tied to its conversation and caches a successful result", async () => {
   const h = harness("");
   new h.window.EventSource("/api/agent/original/events");
@@ -303,6 +356,7 @@ test("a replacement recording starts with silence checks enabled", async () => {
 
 for (const [status, body] of [
   [400, { code: "silence_detected", error: "ordinary failure" }],
+  [502, { code: "silence_detected", error: "ordinary failure" }],
   [422, { code: "unknown", error: "ordinary failure" }],
   [422, { code: ["silence_detected"] }],
   [422, null],
@@ -317,6 +371,31 @@ for (const [status, body] of [
     assert.equal(h.requests[1].headers["x-pi-voice-silence-check"], undefined);
   });
 }
+
+test("a silence code on a successful response does not grant bypass", async () => {
+  for (const text of ["", "Accepted text"]) {
+    const h = harness("");
+    h.setResponse(() => jsonResponse({ text, code: "silence_detected" }));
+    await h.ui.stop();
+    assert.equal(h.ui.pending, null);
+    assert.equal(h.ui.retryButton, null);
+    assert.equal(h.composer.value, text ? `Keep my draft ${text}` : "Keep my draft");
+    assert.equal(h.requests.length, 1);
+  }
+});
+
+test("silence recovery requires complete JSON, independently of Content-Type", async () => {
+  const h = harness("");
+  h.setResponse(() => rawResponse('{"code":"silence_detected"', 422, "application/json"));
+  await h.ui.stop();
+  assert.notEqual(h.ui.pending.silenceDetected, true);
+  assert.equal(h.ui.retryButton.textContent, "Retry");
+  h.setResponse(() => rawResponse('{"code":"silence_detected"}', 422, "text/plain"));
+  await h.ui.retry(true);
+  assert.equal(h.requests[1].headers["x-pi-voice-silence-check"], undefined);
+  assert.equal(h.ui.pending.silenceDetected, true);
+  assert.equal(h.ui.retryButton.textContent, "Transcribe anyway");
+});
 
 test("a nonempty transcript still inserts into the composer, not the terminal", async () => {
   const h = harness("  好。  ");

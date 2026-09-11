@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { createRouter } = require("../../lib/routes.cjs");
 const { toneWav } = require("../../lib/doctor.cjs");
-const audio = Buffer.alloc(44 + 3 * 16000 * 2);
+const audio = toneWav(3);
 const privateText = "PRIVATE_TRANSCRIPT_do_not_log";
 
 function config(deployment = "gpt-transcribe") {
@@ -100,6 +100,7 @@ test("empty responses log provider-default VAD, outcome, UTC time and a per-requ
     assert.match(h.logs[index], /3\.0s audio · 0 terms · 0 chars · zh\/en/);
     assert.doesNotMatch(h.logs[index], /mic opened|filtered|blocked/);
     assert.equal(h.requests[index].get("chunking_strategy"), null);
+    assert.match(h.logs[index], /audio_gate=signal · audio_samples=48000/);
   }
   assert.deepEqual(h.errors, []);
 });
@@ -178,6 +179,40 @@ test("a silence bypass affects one request and stays out of the provider request
   assert.doesNotMatch(h.logs.join("\n"), /PRIVATE_/);
 });
 
+test("a bypassed take retains its WAV and default chunking through provider fallback", async (t) => {
+  const silence = toneWav(.2);
+  silence.fill(0, 44);
+  const h = await harness(t);
+  let attempts = 0;
+  h.setResponse(() => ++attempts === 1
+    ? new Response(JSON.stringify({ error: "unsupported keywords" }), { status: 400 })
+    : new Response(JSON.stringify({ text: privateText })));
+  const response = await h.post(silence, "", { "x-pi-voice-silence-check": "bypass" });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.text, privateText);
+  assert.equal(h.requests.length, 2, "one browser request can make a compatibility fallback");
+  for (const [index, form] of h.requests.entries()) {
+    assert.deepEqual(Buffer.from(await form.get("file").arrayBuffer()), silence);
+    assert.equal(form.get("chunking_strategy"), null);
+    assert.equal(form.get("x-pi-voice-silence-check"), null);
+    assert.equal(h.upstreamHeaders[index]["x-pi-voice-silence-check"], undefined);
+    assert.match(form.get("prompt"), /one continuous plain-text paragraph/);
+  }
+  assert.match(h.logs[0], /audio_gate=bypass$/);
+  assert.equal(h.errors.length, 1);
+  assert.match(h.errors[0], /structured request rejected \(400\).*vad=default$/);
+  assert.doesNotMatch([...h.logs, ...h.errors].join("\n"), /PRIVATE_/);
+});
+
+test("a bypass marker preserves the zero-byte upload rejection", async (t) => {
+  const h = await harness(t);
+  const response = await h.post(Buffer.alloc(0), "", { "x-pi-voice-silence-check": "bypass" });
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error, "empty audio");
+  assert.equal(h.requests.length, 0);
+  assert.match(h.logs[0], /result=rejected · reason=empty-audio$/);
+});
+
 test("only the exact bypass header value bypasses silence detection", async (t) => {
   const silence = toneWav(.2);
   silence.fill(0, 44);
@@ -248,6 +283,19 @@ test("an upstream error logs its status but not its private response body", asyn
   assert.match(h.errors[0], /upstream_status=429$/);
   assert.doesNotMatch(h.errors.join("\n"), /PRIVATE_|speech\.example/);
   assert.deepEqual(h.logs, []);
+});
+
+test("an upstream 422 remains a provider error, not a local silence result", async (t) => {
+  const h = await harness(t, { status: 422, body: { code: "silence_detected", error: privateText } });
+  const response = await h.post();
+  assert.equal(response.status, 502);
+  assert.equal(response.body.code, undefined);
+  assert.ok(response.body.error.includes(privateText));
+  assert.equal(h.requests.length, 1);
+  assert.match(h.errors[0], /result=error/);
+  assert.match(h.errors[0], /audio_gate=signal/);
+  assert.match(h.errors[0], /upstream_status=422$/);
+  assert.doesNotMatch(h.errors[0], /PRIVATE_|result=skipped|upstream=not-called/);
 });
 
 test("manual retries of the same audio log each outcome separately without exposing content", async (t) => {
@@ -343,6 +391,30 @@ test("non-binary request chunks reject through the route instead of escaping str
   assert.equal(status, 502);
   assert.equal(body.error, "audio stream must emit Buffer chunks");
   assert.doesNotMatch(errors.join("\n"), /PRIVATE_DECODED_AUDIO/);
+});
+
+test("a bypass marker preserves the upload byte limit", async t => {
+  const errors = [];
+  t.mock.method(console, "error", message => errors.push(message));
+  t.mock.method(globalThis, "fetch", () => assert.fail("oversized audio must stay local"));
+  const settings = config();
+  settings.limits.maxBytes = 100;
+  let destroyed = false, status, body;
+  const req = Object.assign(new EventEmitter(), {
+    url: "/__voice/transcribe", method: "POST", headers: { "x-pi-voice-silence-check": "bypass" },
+    destroy() { destroyed = true; },
+  });
+  const res = {
+    setHeader() {}, writeHead(code) { status = code; }, end(payload) { body = JSON.parse(payload); },
+  };
+  const handled = createRouter(settings)(req, res);
+  req.emit("data", Buffer.alloc(101));
+  req.emit("end");
+  await handled;
+  assert.equal(destroyed, true);
+  assert.equal(status, 502);
+  assert.equal(body.error, "audio exceeds 100 bytes");
+  assert.match(errors[0], /audio_gate=unchecked · upstream_status=n\/a$/);
 });
 
 test("a zero-byte upload is logged as rejected without calling the speech service", async (t) => {

@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Metadata-only signal-gate decisions and audio levels in request logs, with an explicit
   `upstream=not-called` marker for quiet skips. See [silence check and recovery](USAGE.md#silence-check-and-recovery)
   for limitations and operation.
+- Additional unreleased-feature regressions for bypass/upload limits, upstream 422
+  separation, pending response bodies, cancelled replacement recordings, bounded
+  vocabulary fallback, and PCM container boundaries, including Node 20.0.0 validation.
 
 ### Changed
 
@@ -30,9 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   It preserves substantive content, languages, tone, uncertainty, and technical terms,
   keeps ambiguous wording, and treats dictated questions and instructions as content.
   The prompt accompanies structured vocabulary/language hints, applies without conversation
-  vocabulary, and remains in the keyword fallback. Transcripts
-  retain the provider's words and internal line breaks for user review; style adherence
-  depends on the model. See [dictation style guidance](DEVELOPMENT.md#dictation-style-guidance)
+  vocabulary, and remains in the keyword fallback. Transcripts retain the provider's
+  words and internal line breaks for user review; style adherence depends on the model. See [dictation style guidance](DEVELOPMENT.md#dictation-style-guidance)
   for the prompt's design references.
 - Azure OpenAI `gpt-transcribe` omits `chunking_strategy` on initial and fallback
   requests for a provider-default dictation trial, instead of requesting automatic
@@ -41,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   text handling remain intact. The independent signal gate protects quiet HTTP-route
   takes; louder non-speech audio, unsupported input, direct adapter calls, and explicit
   bypasses can still produce vocabulary-biased text.
+
+### Fixed
+
+- Update release instructions to use an unpublished example version and link the
+  successful `v0.2.0` publication, rather than describing publishing as unexecuted.
+  Clarify silence-bypass fallback costs, old-client upgrade behavior, and log precision.
 
 ## [0.2.0] - 2026-09-08
 

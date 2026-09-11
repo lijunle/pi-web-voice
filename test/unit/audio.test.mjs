@@ -148,6 +148,33 @@ for (const [name, corrupt] of [
   });
 }
 
+test("the chunk-scan budget includes format and data chunks", () => {
+  const within = [...Array.from({ length: 126 }, () => chunk("JUNK", Buffer.alloc(0))), chunk("fmt ", fmt), chunk("data", silentData)];
+  assert.equal(analyzePcmWav(riff(within)).silent, true, "exactly 128 chunks are supported");
+  assert.equal(analyzePcmWav(riff([chunk("JUNK", Buffer.alloc(0)), ...within])), null);
+});
+
+test("mutated RIFF containers stay bounded and leave input bytes unchanged", () => {
+  const template = riff([chunk("JUNK", Buffer.alloc(3)), chunk("fmt ", fmt), chunk("data", silentData)]);
+  let state = 71;
+  const next = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0);
+  for (let trial = 0; trial < 1000; trial++) {
+    const wav = Buffer.from(template);
+    for (let count = 0, changes = 1 + next() % 4; count < changes; count++) {
+      wav[12 + next() % (wav.length - 12)] = next() >>> 24;
+    }
+    const original = Buffer.from(wav);
+    const analysis = analyzePcmWav(wav);
+    if (analysis !== null) {
+      assert.ok(Number.isInteger(analysis.samples) && analysis.samples >= 320);
+      assert.ok(Number.isFinite(analysis.peak) && analysis.peak >= 0 && analysis.peak <= 1);
+      assert.ok(Number.isFinite(analysis.maxRms) && analysis.maxRms >= 0 && analysis.maxRms <= 1);
+      assert.equal(analysis.silent, analysis.maxRms <= .001 && analysis.peak <= .004);
+    }
+    assert.deepEqual(wav, original);
+  }
+});
+
 test("bounded random bytes never throw or become known silence", () => {
   let state = 17;
   for (let size = 0; size < 256; size++) {

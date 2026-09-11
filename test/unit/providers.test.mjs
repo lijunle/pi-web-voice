@@ -183,6 +183,35 @@ for (const v1 of [false, true]) {
   }
 }
 
+test("a vocabulary fallback bounds its terms while retaining the full dictation prompt", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const vocabulary = Array.from({ length: 60 }, (_, index) => `term_${index}_` + "x".repeat(32));
+  const calls = capture(t, [{ status: 400, body: { error: "unsupported keywords" } }, { body: { text: "ok" } }]);
+  assert.equal(await transcribe(audio, azureConfig(), vocabulary, languages), "ok");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].form.getAll("keywords[]"), vocabulary);
+  const prompt = calls[1].form.get("prompt");
+  const prefix = `${dictationPrompt} Terms that may appear: `;
+  assert.ok(prompt.startsWith(prefix));
+  const bounded = prompt.slice(prefix.length, -1);
+  assert.ok(bounded.length <= 700);
+  assert.ok(prompt.endsWith("."));
+  const included = bounded.split(", ");
+  assert.deepEqual(included, vocabulary.slice(0, included.length));
+  assert.ok(bounded.length + 2 + vocabulary[included.length].length > 700);
+  assert.equal(calls[1].form.get("chunking_strategy"), null);
+});
+
+for (const status of [401, 429, 503]) {
+  test(`GPT transcription does not compatibility-retry HTTP ${status}`, async (t) => {
+    const calls = capture(t, [{ status, body: { error: "provider failure" } }]);
+    await assert.rejects(transcribe(audio, azureConfig(), terms, languages), error => error.status === status);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].form.getAll("prompt"), [dictationPrompt]);
+    assert.equal(calls[0].form.get("chunking_strategy"), null);
+  });
+}
+
 test("provider adapters preserve silent WAVs; the HTTP route owns silence gating", async (t) => {
   const silence = toneWav(0.2);
   silence.fill(0, 44);
